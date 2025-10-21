@@ -31,6 +31,8 @@ Analyze this property's location and trajectory.
 **Location Details:**
 {location_details}
 
+**Collaboration Context:** Other teammates are covering investment fundamentals, construction, risk/return, and news. Deliver insights strictly about location trajectory and neighborhood texture. If information is sparse, call out location-specific data to gather rather than repeating general investment commentary.
+
 **Your Task:**
 1. Evaluate area trajectory using proxies: population/income trends, transit/walkability, 
    amenities/schools, crime trends, regulatory red flags

@@ -280,7 +280,11 @@ async def analyze_properties(
         if city_name:
             print(f"✅ Found {len(listings)} listings")
     except LoopNetAPIError as e:
-        raise HTTPException(status_code=502, detail=f"LoopNet API error: {str(e)}")
+        message = str(e)
+        if "No data found" in message:
+            print("⚠️  LoopNet returned no data for the current filters.")
+            return []
+        raise HTTPException(status_code=502, detail=f"LoopNet API error: {message}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
     

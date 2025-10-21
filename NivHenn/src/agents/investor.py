@@ -30,6 +30,8 @@ Analyze this commercial property listing for long-term investment quality.
 **Listing Details:**
 {listing_details}
 
+**Collaboration Context:** You are working alongside other specialists (location, news, risk architects, construction). Offer insights unique to long-term investment quality—avoid repeating their perspectives. When data is missing, highlight investor-specific diligence questions instead of generic statements.
+
 **Your Task:**
 1. Assess long-term hold quality (resilient cash flow, downside protection, tenant demand, exit liquidity)
 2. Output EXACTLY in this JSON format (no extra text):

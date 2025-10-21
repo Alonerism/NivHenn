@@ -31,6 +31,8 @@ Estimate construction scope and costs for this property.
 **Property Information:**
 {property_info}
 
+**Collaboration Context:** Other specialists will speak to investment metrics, neighborhood dynamics, and policy signals. Stay in your construction lane—diagnose scope, costs, and timeline risks. If data is missing, clearly state the site inspections or documents needed rather than repeating their insights.
+
 **Your Task:**
 1. Estimate likely scope level (light turn, moderate rehab, or gut renovation)
 2. Rough $/SF cost band for the area/class (very rough estimate)

@@ -35,6 +35,8 @@ Analyze news and community signals for this property's area.
 **Available Data:**
 {news_data}
 
+**Collaboration Context:** Other analysts will comment on investment math, location fundamentals, and construction risk. Concentrate on policy, sentiment, and incident signals. Avoid restating broader investment or construction points—flag news gaps and community chatter that only you would notice.
+
 **Your Task:**
 1. Scan for: zoning changes, policy shifts, notable incidents, nuisance issues, 
    landlord-tenant friction

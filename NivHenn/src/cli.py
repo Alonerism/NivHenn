@@ -9,9 +9,9 @@ from rich.progress import Progress
 from rich.table import Table
 
 from .app.config import settings
-from .app.filters import load_filters, save_filters
+from .app.filters import load_filters, save_filters, load_city_name
 from .app.models import SearchParams
-from .app.loopnet_client import LoopNetClient
+from .app.loopnet_client import LoopNetClient, LoopNetAPIError
 from .app.crew import PropertyAnalysisCrew
 
 
@@ -27,6 +27,12 @@ CLI_TO_MODEL_FIELD = {
     "building_size_min": "buildingSizeMin",
     "building_size_max": "buildingSizeMax",
     "property_type": "propertyType",
+    "cap_rate_min": "capRateMin",
+    "cap_rate_max": "capRateMax",
+    "year_built_min": "yearBuiltMin",
+    "year_built_max": "yearBuiltMax",
+    "auctions": "auctions",
+    "exclude_pending_sales": "excludePendingSales",
 }
 
 
@@ -141,8 +147,26 @@ async def analyze_command(args):
         save_filters(search_params)
         console.print("[green]✓ Saved filters to config/filters.json[/green]")
 
+    city_name_hint = load_city_name() if args.use_stored else None
+
+    def _has_numeric_location(value: str | None) -> bool:
+        return value is not None and str(value).isdigit()
+
+    city_name_for_request = city_name_hint
+
+    if search_params.locationId and not _has_numeric_location(search_params.locationId):
+        city_name_for_request = search_params.locationId
+        search_params = search_params.model_copy(update={"locationId": None})
+    elif not search_params.locationId and city_name_hint:
+        city_name_for_request = city_name_hint
+
     console.print("[bold]Search Parameters:[/bold]")
-    console.print(f"  Location: {search_params.locationId} ({search_params.locationType})")
+    if search_params.locationId:
+        console.print(f"  Location: {search_params.locationId} ({search_params.locationType})")
+    elif city_name_for_request:
+        console.print(f"  Location: {city_name_for_request} (city lookup)")
+    else:
+        console.print("  Location: Nationwide (no location filter)")
     price_min = search_params.priceMin
     price_max = search_params.priceMax
     if price_min is not None or price_max is not None:
@@ -158,11 +182,28 @@ async def analyze_command(args):
     client = LoopNetClient()
     
     try:
-        listings = await client.search_properties(search_params)
-        console.print(f"[green]✓[/green] Found {len(listings)} listings\n")
-    except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        listings = await client.search_properties(search_params, city_name=city_name_for_request)
+    except LoopNetAPIError as exc:
+        message = str(exc)
+        if "No data found" in message:
+            console.print(
+                "[yellow]No listings matched the current filters. "
+                "Loosen price, cap rate, or size filters, or supply a specific city.[/yellow]"
+            )
+            return
+        console.print(f"[bold red]LoopNet error:[/bold red] {message}")
         return
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        return
+
+    if not listings:
+        console.print(
+            "[yellow]LoopNet returned zero listings. Consider broadening your filters or adding a location.[/yellow]"
+        )
+        return
+
+    console.print(f"[green]✓[/green] Found {len(listings)} listings\n")
     
     if not listings:
         console.print("[yellow]No listings found. Try adjusting your search parameters.[/yellow]")

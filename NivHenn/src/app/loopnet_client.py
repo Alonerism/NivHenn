@@ -109,7 +109,7 @@ class LoopNetClient:
         
         # Build payload from params, excluding None values
         payload = {
-            k: v for k, v in params.model_dump().items() 
+            k: v for k, v in params.model_dump().items()
             if v is not None
         }
         
@@ -118,10 +118,11 @@ class LoopNetClient:
             location_id, display_name = await self.resolve_city_id(city_name)
             payload["locationId"] = location_id
             payload["locationType"] = "city"
-        
-        # Ensure locationId is present
+
+        # When no locationId is supplied, avoid sending stale location metadata
         if not payload.get("locationId"):
-            raise LoopNetAPIError("locationId is required (provide locationId or city_name)")
+            payload.pop("locationId", None)
+            payload.pop("locationType", None)
         
         try:
             response_data = await self._make_request(endpoint, payload)

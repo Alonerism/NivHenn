@@ -1,7 +1,8 @@
 """CrewAI orchestration - coordinates all agents for property analysis."""
 import asyncio
 import json
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, Sequence
 from crewai import Crew, Task
 
 from .models import Listing, AgentOutput, FinalReport, AgentScores
@@ -14,6 +15,27 @@ from ..agents.news_reddit import create_news_agent, NEWS_TASK_TEMPLATE
 from ..agents.vc_risk_return import create_vc_risk_agent, VC_RISK_TASK_TEMPLATE
 from ..agents.construction import create_construction_agent, CONSTRUCTION_TASK_TEMPLATE
 from ..agents.aggregator import create_aggregator_agent, AGGREGATOR_TASK_TEMPLATE
+
+
+ALL_AGENT_KEYS: tuple[str, ...] = (
+    "investment",
+    "location",
+    "news",
+    "vc_risk",
+    "construction",
+)
+
+
+@dataclass
+class SpecialistResult:
+    """Intermediate results from specialist agents."""
+
+    outputs: dict[str, AgentOutput]
+    raw_outputs: dict[str, str]
+    listing_details: str
+    location_details: str
+    news_context: str
+    serper_missing: bool
 
 
 class PropertyAnalysisCrew:
@@ -32,16 +54,31 @@ class PropertyAnalysisCrew:
     
     def _format_listing_details(self, listing: Listing) -> str:
         """Format listing data for agent consumption."""
-        return f"""
-Address: {listing.address or 'N/A'}
-City: {listing.city or 'N/A'}, State: {listing.state or 'N/A'}
-Asking Price: ${listing.ask_price:,.0f} if {listing.ask_price} else 'N/A'
-Building Size: {listing.building_size:,.0f} SF if {listing.building_size} else 'N/A'
-Property Type: {listing.property_type or 'N/A'}
-Cap Rate: {listing.cap_rate}% if {listing.cap_rate} else 'N/A'
-Year Built: {listing.year_built or 'N/A'}
-Units: {listing.units or 'N/A'}
-"""
+        ask_price = f"${listing.ask_price:,.0f}" if listing.ask_price else "N/A"
+        building_size = (
+            f"{listing.building_size:,.0f} SF" if listing.building_size else "N/A"
+        )
+        cap_rate = f"{listing.cap_rate}%" if listing.cap_rate else "N/A"
+        return (
+            "Address: {address}\n"
+            "City: {city}, State: {state}\n"
+            "Asking Price: {ask_price}\n"
+            "Building Size: {building_size}\n"
+            "Property Type: {property_type}\n"
+            "Cap Rate: {cap_rate}\n"
+            "Year Built: {year_built}\n"
+            "Units: {units}\n"
+        ).format(
+            address=listing.address or "N/A",
+            city=listing.city or "N/A",
+            state=listing.state or "N/A",
+            ask_price=ask_price,
+            building_size=building_size,
+            property_type=listing.property_type or "N/A",
+            cap_rate=cap_rate,
+            year_built=listing.year_built or "N/A",
+            units=listing.units or "N/A",
+        )
 
     def _build_news_query(self, listing: Listing) -> str:
         """Assemble a Serper query using listing metadata."""
@@ -115,8 +152,176 @@ Units: {listing.units or 'N/A'}
                 rationale=f"Parse error: {str(e)}",
                 notes=["Failed to parse agent response"]
             )
+
+    @staticmethod
+    def _extract_raw_output(task_output) -> str:
+        """Extract a raw string representation from a CrewAI TaskOutput."""
+        if getattr(task_output, "raw", None):
+            return task_output.raw
+        if getattr(task_output, "json_dict", None):
+            try:
+                return json.dumps(task_output.json_dict)
+            except Exception:
+                return str(task_output.json_dict)
+        return str(task_output)
     
-    async def analyze_listing(self, listing: Listing) -> FinalReport:
+    async def run_specialists(
+        self,
+        listing: Listing,
+        enabled_agents: Optional[Sequence[str]] = None,
+    ) -> SpecialistResult:
+        """Run specialist agents and return their parsed outputs."""
+
+        enabled_set = set(enabled_agents) if enabled_agents else set(ALL_AGENT_KEYS)
+
+        listing_details = self._format_listing_details(listing)
+        location_details = (
+            f"{listing.city}, {listing.state}"
+            if listing.city and listing.state
+            else listing.city
+            if listing.city
+            else "Unknown location"
+        )
+
+        outputs: dict[str, AgentOutput] = {}
+        raw_outputs: dict[str, str] = {}
+
+        # Prepare Serper context only when news agent is enabled
+        news_context = ""
+        serper_missing = False
+        news_response: dict | None = None
+
+        if "news" in enabled_set:
+            news_query = self._build_news_query(listing)
+            news_response = await asyncio.to_thread(search_news, news_query, 8)
+            news_context = self._format_news_context(news_response)
+            serper_missing = news_response.get("note") == "SERPER_API_KEY missing"
+
+            if serper_missing:
+                outputs["news"] = AgentOutput(
+                    score_1_to_100=50,
+                    rationale="Serper API key missing; defaulting to neutral score.",
+                    notes=[
+                        "Set SERPER_API_KEY to enable news sentiment analysis.",
+                        "Without news signals, rely on other agents for sentiment.",
+                    ],
+                )
+                raw_outputs["news"] = "Serper API key missing"
+
+        # Build tasks for enabled specialist agents
+        tasks: list[Task] = []
+        task_labels: list[str] = []
+        crew_agents = []
+
+        if "investment" in enabled_set:
+            investor_task = Task(
+                description=INVESTOR_TASK_TEMPLATE.format(listing_details=listing_details),
+                agent=self.investor_agent,
+                expected_output="JSON with score_1_to_100, rationale, and notes",
+            )
+            tasks.append(investor_task)
+            task_labels.append("investment")
+            crew_agents.append(self.investor_agent)
+
+        if "location" in enabled_set:
+            location_task = Task(
+                description=LOCATION_TASK_TEMPLATE.format(location_details=location_details),
+                agent=self.location_agent,
+                expected_output="JSON with score_1_to_100, rationale, and notes",
+            )
+            tasks.append(location_task)
+            task_labels.append("location")
+            crew_agents.append(self.location_agent)
+
+        if "news" in enabled_set and not serper_missing:
+            news_task = Task(
+                description=NEWS_TASK_TEMPLATE.format(
+                    area_info=location_details,
+                    news_data=news_context,
+                ),
+                agent=self.news_agent,
+                expected_output="JSON with score_1_to_100, rationale, and notes",
+            )
+            tasks.append(news_task)
+            task_labels.append("news")
+            crew_agents.append(self.news_agent)
+
+        if "vc_risk" in enabled_set:
+            vc_risk_task = Task(
+                description=VC_RISK_TASK_TEMPLATE.format(property_details=listing_details),
+                agent=self.vc_risk_agent,
+                expected_output="JSON with score_1_to_100, rationale, and notes",
+            )
+            tasks.append(vc_risk_task)
+            task_labels.append("vc_risk")
+            crew_agents.append(self.vc_risk_agent)
+
+        if "construction" in enabled_set:
+            construction_task = Task(
+                description=CONSTRUCTION_TASK_TEMPLATE.format(property_info=listing_details),
+                agent=self.construction_agent,
+                expected_output="JSON with score_1_to_100, rationale, and notes",
+            )
+            tasks.append(construction_task)
+            task_labels.append("construction")
+            crew_agents.append(self.construction_agent)
+
+        if tasks:
+            specialist_crew = Crew(
+                agents=crew_agents,
+                tasks=tasks,
+                verbose=False,
+            )
+            crew_output = await asyncio.to_thread(specialist_crew.kickoff)
+
+            for label, task_output in zip(task_labels, crew_output.tasks_output):
+                raw_str = self._extract_raw_output(task_output)
+                raw_outputs[label] = raw_str
+                outputs[label] = self._parse_agent_output(raw_str)
+
+        # Fill in defaults for any agents that were not executed
+        skipped_agents = set(ALL_AGENT_KEYS) - set(outputs.keys())
+        for agent_key in skipped_agents:
+            if agent_key not in enabled_set:
+                outputs[agent_key] = AgentOutput(
+                    score_1_to_100=50,
+                    rationale="Agent not selected for this run; using neutral score.",
+                    notes=["Agent skipped by user"],
+                )
+                raw_outputs[agent_key] = "Agent skipped"
+            elif agent_key == "news" and serper_missing:
+                # already populated earlier
+                continue
+            else:
+                outputs[agent_key] = AgentOutput(
+                    score_1_to_100=50,
+                    rationale="Agent failed to produce output; defaulting to neutral score.",
+                    notes=["Check agent configuration or API responses."],
+                )
+                raw_outputs[agent_key] = "Agent output missing"
+
+        return SpecialistResult(
+            outputs=outputs,
+            raw_outputs=raw_outputs,
+            listing_details=listing_details,
+            location_details=location_details,
+            news_context=news_context,
+            serper_missing=serper_missing,
+        )
+
+    async def analyze_listing(
+        self,
+        listing: Listing,
+        enabled_agents: Optional[Sequence[str]] = None,
+    ) -> FinalReport:
+        specialist_result = await self.run_specialists(listing, enabled_agents)
+        return await self.build_final_report(listing, specialist_result)
+
+    async def build_final_report(
+        self,
+        listing: Listing,
+        specialist_result: SpecialistResult,
+    ) -> FinalReport:
         """
         Run full multi-agent analysis on a single listing.
         
@@ -126,105 +331,20 @@ Units: {listing.units or 'N/A'}
         Returns:
             FinalReport with scores and memo
         """
-        listing_details = self._format_listing_details(listing)
-        location_details = f"{listing.city}, {listing.state}" if listing.city else "Unknown location"
+        outputs = specialist_result.outputs
 
-        # Prefetch news context (Serper)
-        news_query = self._build_news_query(listing)
-        news_response = await asyncio.to_thread(search_news, news_query, 8)
-        news_context = self._format_news_context(news_response)
-        serper_missing = news_response.get("note") == "SERPER_API_KEY missing"
+        investment_output = outputs["investment"]
+        location_output = outputs["location"]
+        news_output = outputs["news"]
+        vc_risk_output = outputs["vc_risk"]
+        construction_output = outputs["construction"]
 
-        # Create tasks for all specialist agents
-        investor_task = Task(
-            description=INVESTOR_TASK_TEMPLATE.format(listing_details=listing_details),
-            agent=self.investor_agent,
-            expected_output="JSON with score_1_to_100, rationale, and notes"
-        )
-        
-        location_task = Task(
-            description=LOCATION_TASK_TEMPLATE.format(location_details=location_details),
-            agent=self.location_agent,
-            expected_output="JSON with score_1_to_100, rationale, and notes"
-        )
-        
-        news_task = None
-        if not serper_missing:
-            news_task = Task(
-                description=NEWS_TASK_TEMPLATE.format(
-                    area_info=location_details,
-                    news_data=news_context
-                ),
-                agent=self.news_agent,
-                expected_output="JSON with score_1_to_100, rationale, and notes"
-            )
-        
-        vc_risk_task = Task(
-            description=VC_RISK_TASK_TEMPLATE.format(property_details=listing_details),
-            agent=self.vc_risk_agent,
-            expected_output="JSON with score_1_to_100, rationale, and notes"
-        )
-        
-        construction_task = Task(
-            description=CONSTRUCTION_TASK_TEMPLATE.format(property_info=listing_details),
-            agent=self.construction_agent,
-            expected_output="JSON with score_1_to_100, rationale, and notes"
-        )
-        
-        # Run specialist agents in crew
-        agents = [
-            self.investor_agent,
-            self.location_agent,
-            self.vc_risk_agent,
-            self.construction_agent
-        ]
-        if news_task:
-            agents.insert(2, self.news_agent)
-
-        tasks = [
-            investor_task,
-            location_task,
-            vc_risk_task,
-            construction_task
-        ]
-        if news_task:
-            tasks.insert(2, news_task)
-
-        specialist_crew = Crew(
-            agents=agents,
-            tasks=tasks,
-            verbose=False
-        )
-
-        # Execute specialist analysis
-        results = await asyncio.to_thread(specialist_crew.kickoff)
-        
-        # Parse specialist outputs
-        investment_output = self._parse_agent_output(investor_task.output.raw_output if hasattr(investor_task.output, 'raw_output') else str(results))
-        location_output = self._parse_agent_output(location_task.output.raw_output if hasattr(location_task.output, 'raw_output') else str(results))
-        if news_task:
-            news_output = self._parse_agent_output(
-                news_task.output.raw_output if hasattr(news_task.output, 'raw_output') else str(results)
-            )
-        else:
-            news_output = AgentOutput(
-                score_1_to_100=50,
-                rationale="Serper API key missing; defaulting to a neutral risk score.",
-                notes=[
-                    "Serper API key missing; unable to fetch external news signals.",
-                    "Please set SERPER_API_KEY to enable news analysis."
-                ]
-            )
-        vc_risk_output = self._parse_agent_output(vc_risk_task.output.raw_output if hasattr(vc_risk_task.output, 'raw_output') else str(results))
-        construction_output = self._parse_agent_output(construction_task.output.raw_output if hasattr(construction_task.output, 'raw_output') else str(results))
-        
-        # Calculate overall score
         scores_dict = {
             "investment": investment_output.score_1_to_100,
             "location": location_output.score_1_to_100,
             "news": news_output.score_1_to_100,
             "vc_risk": vc_risk_output.score_1_to_100,
-            "construction": construction_output.score_1_to_100
+            "construction": construction_output.score_1_to_100,
         }
         overall_score = weighted_overall(scores_dict, self.weights)
         
@@ -258,7 +378,7 @@ Notes: {', '.join(construction_output.notes[:3])}
         # Run aggregator
         aggregator_task = Task(
             description=AGGREGATOR_TASK_TEMPLATE.format(
-                property_summary=listing_details,
+                property_summary=specialist_result.listing_details,
                 specialist_scores=specialist_scores,
                 specialist_rationales=specialist_rationales
             ),
@@ -269,13 +389,14 @@ Notes: {', '.join(construction_output.notes[:3])}
         aggregator_crew = Crew(
             agents=[self.aggregator_agent],
             tasks=[aggregator_task],
-            verbose=False
+            verbose=False,
         )
-        
-        aggregator_result = aggregator_crew.kickoff()
-        aggregator_output = self._parse_agent_output(
-            aggregator_task.output.raw_output if hasattr(aggregator_task.output, 'raw_output') else str(aggregator_result)
-        )
+        aggregator_result = await asyncio.to_thread(aggregator_crew.kickoff)
+        if aggregator_result.tasks_output:
+            aggregator_raw = self._extract_raw_output(aggregator_result.tasks_output[-1])
+        else:
+            aggregator_raw = str(aggregator_result)
+        aggregator_output = self._parse_agent_output(aggregator_raw)
         
         # Extract memo from notes
         memo_markdown = "\n".join(aggregator_output.notes) if aggregator_output.notes else "No memo generated"

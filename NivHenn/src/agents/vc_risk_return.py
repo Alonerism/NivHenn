@@ -30,6 +30,8 @@ Analyze risk vectors and propose mitigations for this property investment.
 **Property Details:**
 {property_details}
 
+**Collaboration Context:** Teammates are analyzing investment fundamentals, location trajectory, news sentiment, and construction scope. Your response should focus on risk vectors and mitigations only. Do not repeat their commentary—translate the facts into a risk-adjusted playbook from your architect perspective.
+
 **Your Task:**
 1. Identify major risk vectors: market, regulatory, liquidity, execution, capex, climate
 2. Propose 3-6 concrete mitigations (financing terms, reserves, insurance, phasing, etc.)

@@ -1,5 +1,16 @@
 """Configuration management using Pydantic settings."""
+import os
+
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+try:  # pragma: no cover - defensive import to silence telemetry warnings
+    from crewai.telemetry.telemetry import Telemetry  # type: ignore
+
+    Telemetry.set_tracer = lambda self: None  # noqa: E731
+except Exception:
+    pass
 
 
 class Settings(BaseSettings):

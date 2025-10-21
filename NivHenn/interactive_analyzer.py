@@ -14,9 +14,28 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    BarColumn,
+    TimeElapsedColumn,
+    TextColumn,
+)
 
 console = Console()
 BASE_URL = "http://127.0.0.1:8000"
+
+AGENT_LABELS = {
+    "investment": ("💰", "Investment Agent"),
+    "location": ("📍", "Location Risk Agent"),
+    "news": ("📰", "News/Reddit Agent"),
+    "vc_risk": ("📊", "VC Risk/Return Agent"),
+    "construction": ("🏗️", "Construction Agent"),
+}
+
+
+from src.app.models import FinalReport
+from src.app.crew import PropertyAnalysisCrew
 
 
 def format_price(price: Optional[float]) -> str:
@@ -26,6 +45,20 @@ def format_price(price: Optional[float]) -> str:
     if price >= 1_000_000:
         return f"${price/1_000_000:.2f}M"
     return f"${price:,.0f}"
+
+
+def format_price_per_unit(price: Optional[float], units: Optional[int]) -> str:
+    """Format price per unit."""
+    if price is None or not units:
+        return "N/A"
+    return f"${price/units:,.0f}/unit"
+
+
+def format_price_per_sf(price: Optional[float], size: Optional[float]) -> str:
+    """Format price per square foot."""
+    if price is None or not size:
+        return "N/A"
+    return f"${price/size:,.0f}/SF"
 
 
 def build_loopnet_url(listing) -> str:
@@ -45,40 +78,68 @@ def build_loopnet_url(listing) -> str:
 async def fetch_listings():
     """Fetch listings without running AI analysis."""
     console.print("\n[bold cyan]Step 1: Fetching listings from LoopNet...[/bold cyan]")
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        # Get current filters
-        response = await client.get(f"{BASE_URL}/filters")
-        filters = response.json()
-        
-        console.print(f"[dim]Using filters from config/filters.json[/dim]")
-        
-        # Load cityName directly from filters.json (not from API response)
-        from src.app.filters import load_city_name
-        city_name = load_city_name()
-        
-        if city_name:
-            console.print(f"[dim]City: {city_name}[/dim]")
-        
-        # Fetch listings via our LoopNet client directly
-        from src.app.loopnet_client import LoopNetClient
-        from src.app.models import SearchParams
-        
-        # Build params, excluding cityName
-        params_dict = {k: v for k, v in filters.items() if v is not None}
-        
-        # If no locationId but we have cityName, set a dummy one (will be overridden)
-        if "locationId" not in params_dict and city_name:
-            params_dict["locationId"] = "00000"  # Dummy ID, will be replaced by city_name
-            console.print(f"[dim]Set dummy locationId since cityName is present[/dim]")
-        
-        console.print(f"[dim]Calling search with city_name={city_name}[/dim]")
-        params = SearchParams(**params_dict)
-        
-        client_ln = LoopNetClient()
-        listings = await client_ln.search_properties(params, city_name=city_name)
-        
-        return listings
+
+    from src.app.filters import load_filters, load_city_name
+    from src.app.loopnet_client import LoopNetClient, LoopNetAPIError
+    from src.app.models import SearchParams
+
+    filters_dict: dict[str, object]
+    city_name = load_city_name()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(f"{BASE_URL}/filters")
+            response.raise_for_status()
+            payload = response.json()
+            filters_dict = {k: v for k, v in payload.items() if k != "cityName"}
+            city_name = city_name or payload.get("cityName")
+            console.print("[dim]Loaded filters from running API server[/dim]")
+    except (httpx.HTTPError, OSError):
+        stored = load_filters()
+        filters_dict = stored.model_dump(exclude_none=True)
+        console.print("[dim]API server not reachable; using stored filters locally[/dim]")
+
+    if city_name:
+        console.print(f"[dim]City: {city_name}[/dim]")
+
+    params = SearchParams(**filters_dict)
+
+    def _has_numeric_location(value: str | None) -> bool:
+        return value is not None and str(value).isdigit()
+
+    city_for_request = city_name
+
+    if params.locationId and not _has_numeric_location(params.locationId):
+        city_for_request = params.locationId
+        params = params.model_copy(update={"locationId": None})
+
+    if params.locationId:
+        console.print(f"[dim]Using locationId {params.locationId} ({params.locationType})[/dim]")
+    elif city_for_request:
+        console.print(f"[dim]Calling search with city_name={city_for_request}[/dim]")
+    else:
+        console.print("[dim]No location supplied; running nationwide search[/dim]")
+
+    client_ln = LoopNetClient()
+    try:
+        listings = await client_ln.search_properties(params, city_name=city_for_request)
+    except LoopNetAPIError as exc:
+        message = str(exc)
+        if "No data found" in message:
+            console.print(
+                "[yellow]No listings matched the current filters. "
+                "Try loosening price, cap rate, or size constraints, or add a location filter.[/yellow]"
+            )
+            return []
+        console.print(f"[bold red]LoopNet error:[/bold red] {message}")
+        return []
+
+    if not listings:
+        console.print(
+            "[yellow]LoopNet returned zero listings. Adjust your filters or add a city to broaden results.[/yellow]"
+        )
+
+    return listings
 
 
 def display_listings(listings):
@@ -88,25 +149,30 @@ def display_listings(listings):
     table = Table(show_header=True, header_style="bold magenta")
     table.add_column("#", style="dim", width=4)
     table.add_column("Address", style="cyan")
+    table.add_column("State", style="cyan", width=6)
     table.add_column("Price", justify="right", style="green")
     table.add_column("Cap Rate", justify="right")
     table.add_column("Units", justify="right")
     table.add_column("Size (SF)", justify="right")
-    table.add_column("Listing ID", style="dim")
+    table.add_column("Price Ratios", justify="left", width=16)
     
     for idx, listing in enumerate(listings, 1):
         cap_rate = f"{listing.cap_rate:.2f}%" if listing.cap_rate else "N/A"
         units = str(listing.units) if listing.units else "N/A"
         size = f"{listing.building_size:,.0f}" if listing.building_size else "N/A"
+        per_unit = format_price_per_unit(listing.ask_price, listing.units)
+        per_sf = format_price_per_sf(listing.ask_price, listing.building_size)
+        ratios = f"{per_unit}\n{per_sf}"
         
         table.add_row(
             str(idx),
             listing.address or "No address",
+            listing.state or "N/A",
             format_price(listing.ask_price),
             cap_rate,
             units,
             size,
-            listing.listing_id
+            ratios,
         )
     
     console.print(table)
@@ -190,19 +256,41 @@ def get_next_run_number(outputs_dir: Path) -> int:
     return max(run_numbers) + 1 if run_numbers else 1
 
 
-async def analyze_listing_with_agents(listing, enabled_agents, run_dir: Path):
+async def analyze_listing_with_agents(
+    crew,
+    listing,
+    enabled_agents,
+    run_dir: Path,
+) -> FinalReport:
     """Run analysis on a single listing with selected agents."""
-    from src.app.crew import PropertyAnalysisCrew
-    
+    enabled_set = set(enabled_agents)
+
     console.print(f"\n[yellow]⏳ Analyzing {listing.address}...[/yellow]")
     console.print(f"[dim]Enabled agents: {', '.join(enabled_agents)}[/dim]")
-    
-    crew = PropertyAnalysisCrew()
-    
-    # TODO: Modify crew to accept enabled_agents parameter
-    # For now, run full analysis
-    report = await crew.analyze_listing(listing)
-    
+
+    specialist_result = await crew.run_specialists(listing, enabled_set)
+
+    # Display specialist summaries before aggregator
+    console.print("\n[bold cyan]Specialist agent summaries:[/bold cyan]")
+    for agent_key in enabled_agents:
+        output = specialist_result.outputs.get(agent_key)
+        if not output:
+            continue
+        emoji, title = AGENT_LABELS.get(agent_key, ("🤖", agent_key.title()))
+        notes_preview = "\n".join(f"- {note}" for note in output.notes[:3]) or "- No notes provided"
+        console.print(
+            Panel(
+                f"[green]Score:[/green] {output.score_1_to_100}/100\n"
+                f"[cyan]Rationale:[/cyan] {output.rationale}\n"
+                f"[dim]Key Notes:[/dim]\n{notes_preview}",
+                title=f"{emoji} {title}",
+                border_style="cyan",
+            )
+        )
+
+    # Generate final report (aggregator stage)
+    report = await crew.build_final_report(listing, specialist_result)
+
     # Save report to run directory
     run_dir.mkdir(parents=True, exist_ok=True)
     
@@ -296,7 +384,7 @@ async def main():
         
         if not listings:
             console.print("[red]No listings found. Check your filters in config/filters.json[/red]")
-            return 1
+            return 0
         
         # Display listings
         display_listings(listings)
@@ -332,10 +420,24 @@ async def main():
         # Step 4: Run analysis
         console.print("\n[bold cyan]Step 4: Running AI agent analysis...[/bold cyan]")
         reports = []
-        
-        for listing, agents in analysis_plan:
-            report = await analyze_listing_with_agents(listing, agents, run_dir)
-            reports.append((report, listing))  # Keep original listing for extra data
+        crew = PropertyAnalysisCrew()
+
+        with Progress(
+            SpinnerColumn(),
+            BarColumn(),
+            TextColumn("{task.description}"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            task_id = progress.add_task("Analyzing listings...", total=len(analysis_plan))
+
+            for idx, (listing, agents) in enumerate(analysis_plan, 1):
+                progress.console.print(
+                    f"\n[bold]Listing {idx} of {len(analysis_plan)}:[/bold] {listing.address or listing.listing_id}"
+                )
+                report = await analyze_listing_with_agents(crew, listing, agents, run_dir)
+                reports.append((report, listing, agents))
+                progress.update(task_id, advance=1)
         
         # Step 5: Summary
         console.print("\n[bold green]✓ Analysis Complete![/bold green]\n")
@@ -353,7 +455,7 @@ async def main():
         summary_table.add_column("SF", justify="right", width=9)
         summary_table.add_column("Score", justify="center", style="yellow", width=8)
         
-        for report, listing in reports:
+        for report, listing, _agents in reports:
             cap_rate = f"{listing.cap_rate:.1f}%" if listing.cap_rate else "N/A"
             units = str(listing.units) if listing.units else "N/A"
             size = f"{listing.building_size:,.0f}" if listing.building_size else "N/A"
@@ -371,7 +473,7 @@ async def main():
         
         # Print URLs separately for better readability
         console.print("\n[bold cyan]🔗 Property Links:[/bold cyan]")
-        for report, listing in reports:
+        for report, listing, _agents in reports:
             loopnet_url = build_loopnet_url(listing)
             console.print(f"  • [cyan]{report.address}[/cyan]: [blue underline]{loopnet_url}[/blue underline]")
         

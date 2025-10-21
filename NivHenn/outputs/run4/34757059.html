@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Property Analysis: 4326 Hammel St</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header .subtitle {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .score-badge {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-size: 1.5em;
+            font-weight: bold;
+            margin-top: 20px;
+        }
+        
+        .property-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            padding: 40px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .detail-box {
+            text-align: center;
+        }
+        
+        .detail-label {
+            font-size: 0.9em;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 5px;
+        }
+        
+        .detail-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .loopnet-link {
+            padding: 20px 40px;
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+        }
+        
+        .loopnet-link a {
+            color: #0066cc;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        
+        .loopnet-link a:hover {
+            text-decoration: underline;
+        }
+        
+        .agent-section {
+            padding: 40px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        .agent-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .agent-icon {
+            font-size: 3em;
+            margin-right: 20px;
+        }
+        
+        .agent-title {
+            flex: 1;
+        }
+        
+        .agent-title h2 {
+            font-size: 1.8em;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .agent-score {
+            font-size: 2em;
+            font-weight: bold;
+            padding: 10px 25px;
+            border-radius: 8px;
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+        
+        .agent-score.medium {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+        
+        .agent-score.low {
+            background: #ffebee;
+            color: #c62828;
+        }
+        
+        .rationale {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #667eea;
+        }
+        
+        .rationale h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .notes {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .notes li {
+            padding: 12px 20px;
+            margin: 8px 0;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border-left: 3px solid #667eea;
+        }
+        
+        .notes li:before {
+            content: "→";
+            color: #667eea;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        
+        .memo-section {
+            padding: 40px;
+            background: #fafafa;
+        }
+        
+        .memo-section h2 {
+            font-size: 2em;
+            color: #333;
+            margin-bottom: 30px;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .memo-content {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .footer {
+            padding: 20px 40px;
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+            background: #f8f9fa;
+        }
+        
+        @media print {
+            body {
+                background: white;
+                padding: 0;
+            }
+            .container {
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏢 4326 Hammel St</h1>
+            <div class="subtitle">Listing ID: 34757059</div>
+            <div class="score-badge">Overall Score: 65/100</div>
+        </div>
+        
+        <div class="property-details">
+            <div class="detail-box">
+                <div class="detail-label">Asking Price</div>
+                <div class="detail-value">$925,000</div>
+            </div>
+            <div class="detail-box">
+                <div class="detail-label">Cap Rate</div>
+                <div class="detail-value">11.8%</div>
+            </div>
+            <div class="detail-box">
+                <div class="detail-label">Units</div>
+                <div class="detail-value">4</div>
+            </div>
+            <div class="detail-box">
+                <div class="detail-label">Building Size</div>
+                <div class="detail-value">6,240 SF</div>
+            </div>
+            <div class="detail-box">
+                <div class="detail-label">Year Built</div>
+                <div class="detail-value">N/A</div>
+            </div>
+        </div>
+        
+        <div class="loopnet-link">
+            🔗 <strong>View on LoopNet:</strong> <a href="https://www.loopnet.com/Listing/4326-Hammel-St-East-Los-Angeles-CA/34757059/" target="_blank">https://www.loopnet.com/Listing/4326-Hammel-St-East-Los-Angeles-CA/34757059/</a>
+        </div>
+
+        <div class="agent-section">
+            <div class="agent-header">
+                <div class="agent-icon">💰</div>
+                <div class="agent-title">
+                    <h2>Investment Agent</h2>
+                </div>
+                <div class="agent-score medium">65/100</div>
+            </div>
+            
+            <div class="rationale">
+                <h3>Analysis</h3>
+                <p>The property has a strong cap rate indicating good cash flow potential, but the lack of information on tenant demand, property type, and year built introduces risk. East Los Angeles has a growing population which may support tenant demand, but the economic volatility and property specifics need further analysis.</p>
+            </div>
+            
+            <ul class="notes">
+                <li>Pro: High cap rate of 11.83% suggests strong cash flow potential.</li>
+                <li>Con: Lack of property type information could affect tenant demand analysis.</li>
+                <li>Con: No year built data, which could influence maintenance costs and depreciation.</li>
+                <li>Underwriting assumption to test 1: Verify tenant occupancy rates and stability.</li>
+                <li>Underwriting assumption to test 2: Assess local market conditions for downside protection.</li>
+            </ul>
+        </div>
+
+        <div class="agent-section">
+            <div class="agent-header">
+                <div class="agent-icon">📍</div>
+                <div class="agent-title">
+                    <h2>Location Risk Agent</h2>
+                </div>
+                <div class="agent-score ">72/100</div>
+            </div>
+            
+            <div class="rationale">
+                <h3>Analysis</h3>
+                <p>East Los Angeles is experiencing a positive trajectory with a growing population and improving transit infrastructure. However, moderate crime rates and potential regulatory risks like rent control require caution. The area's cultural amenities and proximity to downtown Los Angeles enhance its attractiveness for potential gentrification.</p>
+            </div>
+            
+            <ul class="notes">
+                <li>Population/income trend signal: Growing population and increasing median income in the area.</li>
+                <li>Transit/walkability assessment: Recent improvements in public transit and walkability, enhancing accessibility.</li>
+                <li>Amenities/schools vibe: Diverse cultural amenities and schools are gaining recognition, attracting new residents.</li>
+                <li>Crime/safety trend: Moderate crime rates with slight improvements over the past few years.</li>
+                <li>Regulatory risk or opportunity: Potential risks from evolving rent control regulations and eviction moratoria.</li>
+            </ul>
+        </div>
+
+        <div class="agent-section">
+            <div class="agent-header">
+                <div class="agent-icon">📰</div>
+                <div class="agent-title">
+                    <h2>News/Reddit Agent</h2>
+                </div>
+                <div class="agent-score medium">50/100</div>
+            </div>
+            
+            <div class="rationale">
+                <h3>Analysis</h3>
+                <p>The available data does not provide specific signals about East Los Angeles, necessitating a cautious score. While there are broader real estate concerns in California like rising costs and tariff uncertainty, these are not directly linked to zoning changes, policy shifts, or notable incidents in East Los Angeles. The lack of specific, recent data for this area limits the assessment.</p>
+            </div>
+            
+            <ul class="notes">
+                <li>No significant signals found</li>
+                <li>Data limitation note: The available news sources do not provide specific information on zoning changes, policy shifts, notable incidents, nuisance issues, or landlord-tenant friction in East Los Angeles.</li>
+            </ul>
+        </div>
+
+        <div class="agent-section">
+            <div class="agent-header">
+                <div class="agent-icon">📊</div>
+                <div class="agent-title">
+                    <h2>VC Risk/Return Agent</h2>
+                </div>
+                <div class="agent-score ">70/100</div>
+            </div>
+            
+            <div class="rationale">
+                <h3>Analysis</h3>
+                <p>The property presents a moderate risk profile with addressable concerns through standard mitigations. Key risks such as market volatility, regulatory environment, and capex requirements can be mitigated effectively, improving the investment's overall attractiveness.</p>
+            </div>
+            
+            <ul class="notes">
+                <li>Market Risk: Potential market volatility in East Los Angeles can affect property values and rental income. Mitigation: Implement a conservative rental pricing strategy and maintain a cash reserve to cover potential income shortfalls.</li>
+                <li>Regulatory Risk: Changes in local housing regulations could impact operations. Mitigation: Engage with a local legal advisor to stay informed about regulatory changes and ensure compliance.</li>
+                <li>Liquidity Risk: The property's marketability could be affected by economic downturns. Mitigation: Secure flexible financing terms that allow for refinancing options and maintain a liquidity reserve.</li>
+                <li>Execution Risk: Potential delays or cost overruns in property management or upgrades. Mitigation: Partner with experienced local property management firms and negotiate fixed-price contracts where possible.</li>
+                <li>Capex Risk: The building may require significant capital expenditure due to age. Mitigation: Conduct a thorough property inspection and establish a phased capex plan with cost estimations.</li>
+                <li>Overall risk profile summary: While there are inherent risks associated with the East Los Angeles market, these can be mitigated through strategic planning and local partnerships, resulting in a reasonable risk-adjusted return.</li>
+            </ul>
+        </div>
+
+        <div class="agent-section">
+            <div class="agent-header">
+                <div class="agent-icon">🏗️</div>
+                <div class="agent-title">
+                    <h2>Construction Agent</h2>
+                </div>
+                <div class="agent-score medium">55/100</div>
+            </div>
+            
+            <div class="rationale">
+                <h3>Analysis</h3>
+                <p>Given the property's age and lack of specific details, a significant renovation might be necessary. The potential for hidden issues requires a conservative approach, with medium to high costs expected. The investment could be attractive if renovation risks are managed effectively.</p>
+            </div>
+            
+            <ul class="notes">
+                <li>Estimated scope level: moderate to heavy</li>
+                <li>Rough $/SF estimate or range: $100-$150/SF</li>
+                <li>Timeline risk assessment: Moderate to high due to potential hidden issues and necessary extensive renovations</li>
+                <li>Disruption risk (tenant vacancy, income loss): High, likely requiring temporary tenant relocation during major works</li>
+                <li>Major unknowns requiring inspection: Structural integrity, plumbing and electrical systems, potential for asbestos or lead-based paint</li>
+            </ul>
+        </div>
+
+        <div class="memo-section">
+            <h2>📝 Investment Memo</h2>
+            <div class="memo-content">
+                <p><h2>Investment Memo for 4326 Hammel St, East Los Angeles, CA</p><p><h3>Deal Snapshot
+<ul>
+<li><strong>Address</strong>: 4326 Hammel St, East Los Angeles, CA</li>
+<li><strong>Asking Price</strong>: $925,000</li>
+<li><strong>Building Size</strong>: 6,240 SF</li>
+<li><strong>Cap Rate</strong>: 11.83%</li>
+<li><strong>Units</strong>: 4</p><p><h3>Score Table</li>
+<li><strong>Investment Analyst</strong>: 65/100</li>
+<li><strong>Location Risk</strong>: 72/100</li>
+<li><strong>News Signals</strong>: 50/100</li>
+<li><strong>VC Risk/Return</strong>: 70/100</li>
+<li><strong>Construction</strong>: 55/100</li>
+<li><strong>Weighted Overall</strong>: 65/100</p><p><h3>Top 5 Risks & Mitigations</li>
+<li><strong>Lack of Property Type Information</strong>: Conduct thorough market research to assess tenant demand specific to the property type.</li>
+<li><strong>Construction/Renovation Needs</strong>: Budget for potential heavy renovations and conduct detailed inspections to uncover hidden issues.</li>
+<li><strong>Regulatory Environment</strong>: Stay informed on local housing regulations with a legal advisor.</li>
+<li><strong>Market Volatility</strong>: Implement conservative rental pricing and maintain cash reserves.</li>
+<li><strong>Data Limitations</strong>: Seek additional local market insights to fill gaps in news and data.</p><p><h3>Red Flags</li>
+<li><strong>Lack of Year Built Information</strong>: Potential for unexpected maintenance and depreciation costs.</li>
+<li><strong>Moderate Construction Score</strong>: Indicates possible high renovation costs and timeline risks.</p><p><h3>Investment Thesis</li>
+</ul>
+The property offers a compelling opportunity with an attractive cap rate of 11.83%, indicating strong cash flow potential. East Los Angeles is poised for growth with a rising population and improved infrastructure, enhancing the property's long-term value. However, the lack of detailed property specifics and potential renovation requirements necessitate a cautious approach. Addressing these risks can unlock significant value in a gentrifying neighborhood.</p><p><h3>Go/No-Go
+<strong>Recommendation</strong>: Conditional Go
+<ul>
+<li><strong>Conditions</strong>: Obtain a detailed property assessment to clarify construction needs and year built; secure flexible financing and legal advisory to navigate regulatory risks; verify tenant demand through local market analysis.</li>
+</ul></p>
+            </div>
+        </div>
+        
+        <div class="footer">
+            Generated on October 20, 2025 at 04:00 PM
+        </div>
+    </div>
+</body>
+</html>
