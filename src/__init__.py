@@ -1,1 +1,1 @@
-# Insurance Master Package
+"""Package initialization."""

@@ -1,543 +1,333 @@
-#!/usr/bin/env python3
+"""FastAPI application for real estate analysis API."""
+import html
+import json
+from typing import Optional
+
+from fastapi import Body, FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import ValidationError
+
+from .app.config import settings
+from .app.filters import load_filters, update_filters, reset_filters, save_filters, load_city_name
+from .app.models import SearchParams, FinalReport, FilterUpdate
+from .app.loopnet_client import LoopNetClient, LoopNetAPIError
+from .app.crew import PropertyAnalysisCrew
+
+
+app = FastAPI(
+    title="Real Estate Scout API",
+    description="Multi-agent property analysis using LoopNet + CrewAI",
+    version="0.1.0"
+)
+
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information."""
+    return {
+        "service": "Real Estate Scout API",
+        "version": "0.1.0",
+        "endpoints": {
+            "health": "/health",
+            "filters": {
+                "get": "GET /filters",
+                "update": "POST /filters",
+                "reset": "POST /filters/reset",
+                "ui": "GET /filters/ui"
+            },
+            "analyze": "POST /analyze"
+        }
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint.
+    
+    Returns API status and configuration info.
+    """
+    # Check if API keys are configured
+    rapidapi_configured = bool(settings.rapidapi_key and settings.rapidapi_key != "__SET_ME__")
+    openai_configured = bool(settings.openai_api_key and settings.openai_api_key != "__SET_ME__")
+    
+    return {
+        "status": "healthy",
+        "rapidapi_configured": rapidapi_configured,
+        "openai_configured": openai_configured,
+        "weights": settings.get_weights()
+    }
+
+
+def _render_bool_select(name: str, current: Optional[bool]) -> str:
+    current_value = "" if current is None else ("true" if current else "false")
+    options = [
+        ("", "Auto"),
+        ("true", "True"),
+        ("false", "False"),
+    ]
+    rendered = []
+    for value, label in options:
+        selected = " selected" if value == current_value else ""
+        rendered.append(f'<option value="{value}"{selected}>{label}</option>')
+    return f'<select name="{name}" class="field-input">{"".join(rendered)}</select>'
+
+
+def _render_filter_form(filters: SearchParams, message: Optional[str] = None, error: Optional[str] = None) -> str:
+    data = filters.model_dump()
+
+    def val(field: str) -> str:
+        value = data.get(field)
+        return "" if value is None else str(value)
+
+    feedback_block = ""
+    if message:
+        feedback_block = f'<div class="feedback success">{html.escape(message)}</div>'
+    if error:
+        feedback_block += f'<div class="feedback error">{html.escape(error)}</div>'
+
+    filters_json = html.escape(json.dumps(data, indent=2), quote=False)
+
+    return f"""<!DOCTYPE html>
+<html lang=\"en\">
+  <head>
+    <meta charset=\"utf-8\" />
+    <title>LoopNet Filter Manager</title>
+    <style>
+      body {{ font-family: 'Inter', Arial, sans-serif; background: #f4f5f7; margin: 0; padding: 32px; color: #1f2933; }}
+      h1 {{ margin-bottom: 8px; }}
+      p.lead {{ color: #52606d; margin-top: 0; }}
+      .container {{ max-width: 900px; margin: 0 auto; background: white; padding: 32px; border-radius: 12px; box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08); }}
+      form {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px 24px; margin-top: 24px; }}
+      label {{ display: flex; flex-direction: column; font-size: 14px; color: #334155; font-weight: 600; gap: 6px; }}
+      .field-input {{ padding: 10px 12px; border-radius: 8px; border: 1px solid #cbd5e1; background: #f8fafc; font-size: 14px; transition: border-color 0.2s ease, box-shadow 0.2s ease; }}
+      .field-input:focus {{ outline: none; border-color: #6366f1; box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15); background: white; }}
+      .actions {{ grid-column: 1 / -1; display: flex; gap: 12px; margin-top: 8px; flex-wrap: wrap; }}
+      button {{ padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; font-size: 14px; font-weight: 600; }}
+      button.primary {{ background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; box-shadow: 0 10px 18px rgba(99, 102, 241, 0.18); }}
+      button.secondary {{ background: #e2e8f0; color: #334155; }}
+      button.secondary:hover {{ background: #cbd5e1; }}
+      .feedback {{ grid-column: 1 / -1; padding: 12px 16px; border-radius: 8px; font-size: 14px; }}
+      .feedback.success {{ background: #dcfce7; color: #065f46; }}
+      .feedback.error {{ background: #fee2e2; color: #b91c1c; }}
+      pre {{ background: #0f172a; color: #e2e8f0; padding: 16px; border-radius: 10px; overflow-x: auto; font-size: 13px; line-height: 1.5; grid-column: 1 / -1; }}
+      .help {{ grid-column: 1 / -1; font-size: 13px; color: #475569; margin-bottom: 4px; }}
+    </style>
+  </head>
+  <body>
+    <div class=\"container\">
+      <h1>LoopNet Filter Manager</h1>
+      <p class=\"lead\">Adjust the stored search filters used by the LoopNet analyzer. Leave a field blank to remove that filter.</p>
+      {feedback_block}
+      <form method=\"post\" action=\"/filters/ui\">
+        <label>Location ID<input class=\"field-input\" name=\"locationId\" value=\"{html.escape(val('locationId'))}\" required /></label>
+        <label>Location Type<input class=\"field-input\" name=\"locationType\" value=\"{html.escape(val('locationType'))}\" required /></label>
+        <label>Page<input class=\"field-input\" type=\"number\" name=\"page\" min=\"1\" value=\"{html.escape(val('page'))}\" /></label>
+        <label>Page Size<input class=\"field-input\" type=\"number\" name=\"size\" min=\"1\" max=\"100\" value=\"{html.escape(val('size'))}\" /></label>
+        <label>Price Min ($)<input class=\"field-input\" type=\"number\" step=\"1000\" name=\"priceMin\" value=\"{html.escape(val('priceMin'))}\" /></label>
+        <label>Price Max ($)<input class=\"field-input\" type=\"number\" step=\"1000\" name=\"priceMax\" value=\"{html.escape(val('priceMax'))}\" /></label>
+        <label>Building Size Min (SF)<input class=\"field-input\" type=\"number\" step=\"100\" name=\"buildingSizeMin\" value=\"{html.escape(val('buildingSizeMin'))}\" /></label>
+        <label>Building Size Max (SF)<input class=\"field-input\" type=\"number\" step=\"100\" name=\"buildingSizeMax\" value=\"{html.escape(val('buildingSizeMax'))}\" /></label>
+        <label>Property Type<input class=\"field-input\" name=\"propertyType\" value=\"{html.escape(val('propertyType'))}\" /></label>
+        <label>Cap Rate Min (%)<input class=\"field-input\" type=\"number\" step=\"0.1\" name=\"capRateMin\" value=\"{html.escape(val('capRateMin'))}\" /></label>
+        <label>Cap Rate Max (%)<input class=\"field-input\" type=\"number\" step=\"0.1\" name=\"capRateMax\" value=\"{html.escape(val('capRateMax'))}\" /></label>
+        <label>Year Built Min<input class=\"field-input\" type=\"number\" name=\"yearBuiltMin\" value=\"{html.escape(val('yearBuiltMin'))}\" /></label>
+        <label>Year Built Max<input class=\"field-input\" type=\"number\" name=\"yearBuiltMax\" value=\"{html.escape(val('yearBuiltMax'))}\" /></label>
+        <label>Include Auctions{_render_bool_select('auctions', filters.auctions)}</label>
+        <label>Exclude Pending Sales{_render_bool_select('excludePendingSales', filters.excludePendingSales)}</label>
+        <div class=\"help\">Use the buttons below to save changes or reset to defaults.</div>
+                <div class=\"actions\">
+                    <button type=\"submit\" class=\"primary\">Save Filters</button>
+                    <button type=\"submit\" class=\"secondary\" formaction=\"/filters/ui/reset\" formmethod=\"post\">Reset Defaults</button>
+                </div>
+      </form>
+      <h2>Current Configuration</h2>
+      <pre>{filters_json}</pre>
+    </div>
+  </body>
+</html>
 """
-Insurance Master - Main Application
 
-A Tkinter application for managing building insurance policies with:
-- Agent-to-building table view
-- PDF policy parsing
-- AI-powered Q&A system
-- Email alerts for expiring policies
-"""
 
-import tkinter as tk
-from tkinter import ttk, messagebox
-import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
-import os
-import sys
-from pathlib import Path
+@app.get("/filters", response_model=SearchParams)
+async def get_filters():
+    """Return the currently stored filters."""
+    return load_filters()
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
 
-from db.database import InsuranceDatabase
-from parsing.pdf_parser import PolicyPDFParser
-from rag.rag_system import RAGSystem
-from alerts.email_alerts import EmailAlertSystem
-from ui.policy_table import PolicyTableWidget
-from ui.dialogs import EditAssignmentDialog, AddItemDialog, PDFUploadDialog
-from ui.chat_panel import ChatPanel
-
-class InsuranceMasterApp:
-    def __init__(self):
-        """Initialize the Insurance Master application"""
-        self.root = ttk.Window(themename="darkly")
-        self.root.title("Insurance Master")
-        self.root.geometry("1400x900")
-        self.root.minsize(1200, 800)
-        
-        # Initialize components
-        self._initialize_components()
-        
-        # Create UI
-        self._create_ui()
-        
-        # Start alert system
-        self._start_alerts()
-        
-        # Bind window close event
-        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
-    
-    def _initialize_components(self):
-        """Initialize all application components"""
-        try:
-            # Initialize database
-            print("Initializing database...")
-            self.db = InsuranceDatabase()
-            print("Database initialized successfully")
-            
-            # Initialize PDF parser
-            print("Initializing PDF parser...")
-            self.pdf_parser = PolicyPDFParser()
-            print("PDF parser initialized successfully")
-            
-            # Initialize RAG system (optional)
-            print("Initializing RAG system...")
-            try:
-                self.rag_system = RAGSystem(self.db)
-                print("RAG system initialized successfully")
-            except Exception as e:
-                print(f"Warning: RAG system initialization failed: {e}")
-                print("Q&A functionality will be limited, but other features will work")
-                self.rag_system = None
-            
-            # Initialize email alert system
-            print("Initializing email alert system...")
-            try:
-                self.alert_system = EmailAlertSystem(self.db)
-                print("Email alert system initialized successfully")
-            except Exception as e:
-                print(f"Warning: Email alert system initialization failed: {e}")
-                print("Email alerts will not be available, but other features will work")
-                self.alert_system = None
-            
-        except Exception as e:
-            messagebox.showerror("Initialization Error", 
-                               f"Failed to initialize application components:\n{str(e)}")
-            sys.exit(1)
-    
-    def _create_ui(self):
-        """Create the main user interface"""
-        # Configure grid weights
-        self.root.grid_rowconfigure(0, weight=1)
-        self.root.grid_columnconfigure(0, weight=1)
-        
-        # Create main notebook for tabs
-        self.notebook = ttk.Notebook(self.root)
-        self.notebook.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        
-        # Create tabs
-        self._create_policy_table_tab()
-        self._create_chat_tab()
-        self._create_upload_tab()
-        self._create_alerts_tab()
-        
-        # Create menu bar
-        self._create_menu()
-    
-    def _create_policy_table_tab(self):
-        """Create the main policy table tab"""
-        table_frame = ttk.Frame(self.notebook)
-        self.notebook.add(table_frame, text="Policy Management")
-        
-        # Create policy table widget
-        self.policy_table = PolicyTableWidget(table_frame, self.db)
-        self.policy_table.pack(fill=BOTH, expand=True)
-        
-        # Set callbacks
-        self.policy_table.set_edit_callback(self._on_edit_assignment)
-        self.policy_table.set_add_callback(self._on_add_item)
-    
-    def _create_chat_tab(self):
-        """Create the chat Q&A tab"""
-        chat_frame = ttk.Frame(self.notebook)
-        self.notebook.add(chat_frame, text="Policy Q&A")
-        
-        if self.rag_system:
-            # Create chat panel
-            self.chat_panel = ChatPanel(chat_frame, self.rag_system)
-            self.chat_panel.pack(fill=BOTH, expand=True)
-        else:
-            # Show error message if RAG system is not available
-            self._create_chat_error_interface(chat_frame)
-    
-    def _create_chat_error_interface(self, parent):
-        """Create an error interface when RAG system is not available"""
-        main_frame = ttk.Frame(parent, padding=20)
-        main_frame.pack(fill=BOTH, expand=True)
-        
-        # Error icon and message
-        error_label = ttk.Label(main_frame, text="⚠️", font=("Helvetica", 48))
-        error_label.pack(pady=(50, 20))
-        
-        title_label = ttk.Label(main_frame, text="Q&A System Unavailable", 
-                               font=("Helvetica", 16, "bold"))
-        title_label.pack(pady=(0, 20))
-        
-        desc_label = ttk.Label(main_frame, 
-                              text="The Policy Q&A system is currently unavailable due to configuration issues.",
-                              font=("Helvetica", 12))
-        desc_label.pack(pady=(0, 30))
-        
-        # Troubleshooting information
-        troubleshooting_frame = ttk.LabelFrame(main_frame, text="Troubleshooting", padding=15)
-        troubleshooting_frame.pack(fill=X, pady=(0, 20))
-        
-        issues = [
-            "• Check that your OpenAI API key is set in the .env file",
-            "• Ensure ChromaDB is properly installed: pip install chromadb",
-            "• Verify all dependencies are installed: pip install -r requirements.txt",
-            "• Check the console for specific error messages"
-        ]
-        
-        for issue in issues:
-            ttk.Label(troubleshooting_frame, text=issue, 
-                     font=("Helvetica", 10)).pack(anchor=W, pady=2)
-        
-        # Refresh button
-        refresh_button = ttk.Button(main_frame, text="🔄 Retry Initialization", 
-                                  style="primary.TButton",
-                                  command=self._retry_rag_initialization)
-        refresh_button.pack(pady=(20, 0))
-    
-    def _retry_rag_initialization(self):
-        """Retry initializing the RAG system"""
-        try:
-            print("Retrying RAG system initialization...")
-            self.rag_system = RAGSystem(self.db)
-            print("RAG system initialized successfully")
-            
-            # Refresh the chat tab
-            self.notebook.forget(self.notebook.index("Policy Q&A"))
-            self._create_chat_tab()
-            
-            messagebox.showinfo("Success", "Q&A system has been initialized successfully!")
-            
-        except Exception as e:
-            messagebox.showerror("Initialization Failed", 
-                               f"Failed to initialize RAG system:\n{str(e)}")
-    
-    def _create_upload_tab(self):
-        """Create the PDF upload tab"""
-        upload_frame = ttk.Frame(self.notebook)
-        self.notebook.add(upload_frame, text="Upload Policies")
-        
-        # Create upload interface
-        self._create_upload_interface(upload_frame)
-    
-    def _create_upload_interface(self, parent):
-        """Create the PDF upload interface"""
-        # Main container
-        main_frame = ttk.Frame(parent, padding=20)
-        main_frame.pack(fill=BOTH, expand=True)
-        
-        # Title
-        title_label = ttk.Label(main_frame, text="Upload Policy PDFs", 
-                               font=("Helvetica", 16, "bold"))
-        title_label.pack(pady=(0, 20))
-        
-        # Description
-        desc_label = ttk.Label(main_frame, 
-                              text="Upload PDF policy documents to automatically extract information and add them to the knowledge base.",
-                              font=("Helvetica", 11))
-        desc_label.pack(pady=(0, 30))
-        
-        # Upload button
-        upload_button = ttk.Button(main_frame, text="📄 Upload New Policy PDF", 
-                                 style="success.TButton", 
-                                 command=self._show_upload_dialog)
-        upload_button.pack(pady=(0, 20))
-        
-        # Instructions
-        instructions_frame = ttk.LabelFrame(main_frame, text="Instructions", padding=15)
-        instructions_frame.pack(fill=X, pady=(0, 20))
-        
-        instructions = [
-            "1. Click 'Upload New Policy PDF' to select a policy document",
-            "2. Choose the building and agent for the policy",
-            "3. The system will automatically parse the PDF and extract key information",
-            "4. Review the extracted data and save if correct",
-            "5. The policy will be added to the knowledge base for Q&A"
-        ]
-        
-        for instruction in instructions:
-            ttk.Label(instructions_frame, text=instruction, 
-                     font=("Helvetica", 10)).pack(anchor=W, pady=2)
-        
-        # Supported formats
-        formats_frame = ttk.LabelFrame(main_frame, text="Supported Formats", padding=15)
-        formats_frame.pack(fill=X)
-        
-        ttk.Label(formats_frame, text="• PDF files (.pdf)", 
-                 font=("Helvetica", 10)).pack(anchor=W, pady=2)
-        ttk.Label(formats_frame, text="• Text-based PDFs work best", 
-                 font=("Helvetica", 10)).pack(anchor=W, pady=2)
-        ttk.Label(formats_frame, text="• Scanned PDFs may have limited extraction", 
-                 font=("Helvetica", 10)).pack(anchor=W, pady=2)
-    
-    def _create_alerts_tab(self):
-        """Create the alerts management tab"""
-        alerts_frame = ttk.Frame(self.notebook)
-        self.notebook.add(alerts_frame, text="Alerts & Notifications")
-        
-        if self.alert_system:
-            # Create alerts interface
-            self._create_alerts_interface(alerts_frame)
-        else:
-            # Show error message if alert system is not available
-            self._create_alerts_error_interface(alerts_frame)
-    
-    def _create_alerts_error_interface(self, parent):
-        """Create an error interface when alert system is not available"""
-        main_frame = ttk.Frame(parent, padding=20)
-        main_frame.pack(fill=BOTH, expand=True)
-        
-        # Error icon and message
-        error_label = ttk.Label(main_frame, text="⚠️", font=("Helvetica", 48))
-        error_label.pack(pady=(50, 20))
-        
-        title_label = ttk.Label(main_frame, text="Alert System Unavailable", 
-                               font=("Helvetica", 16, "bold"))
-        title_label.pack(pady=(0, 20))
-        
-        desc_label = ttk.Label(main_frame, 
-                              text="The email alert system is currently unavailable due to configuration issues.",
-                              font=("Helvetica", 12))
-        desc_label.pack(pady=(0, 30))
-        
-        # Troubleshooting information
-        troubleshooting_frame = ttk.LabelFrame(main_frame, text="Troubleshooting", padding=15)
-        troubleshooting_frame.pack(fill=X, pady=(0, 20))
-        
-        issues = [
-            "• Check that your email settings are configured in the .env file",
-            "• Ensure all required email variables are set (EMAIL_USER, EMAIL_PASSWORD, etc.)",
-            "• For Gmail, use an App Password, not your regular password",
-            "• Verify SMTP settings and port numbers are correct"
-        ]
-        
-        for issue in issues:
-            ttk.Label(troubleshooting_frame, text=issue, 
-                     font=("Helvetica", 10)).pack(anchor=W, pady=2)
-        
-        # Refresh button
-        refresh_button = ttk.Button(main_frame, text="🔄 Retry Initialization", 
-                                  style="primary.TButton",
-                                  command=self._retry_alerts_initialization)
-        refresh_button.pack(pady=(20, 0))
-    
-    def _retry_alerts_initialization(self):
-        """Retry initializing the alert system"""
-        try:
-            print("Retrying alert system initialization...")
-            self.alert_system = EmailAlertSystem(self.db)
-            print("Alert system initialized successfully")
-            
-            # Refresh the alerts tab
-            self.notebook.forget(self.notebook.index("Alerts & Notifications"))
-            self._create_alerts_tab()
-            
-            messagebox.showinfo("Success", "Alert system has been initialized successfully!")
-            
-        except Exception as e:
-            messagebox.showerror("Initialization Failed", 
-                               f"Failed to initialize alert system:\n{str(e)}")
-    
-    def _create_alerts_interface(self, parent):
-        """Create the alerts management interface"""
-        # Main container
-        main_frame = ttk.Frame(parent, padding=20)
-        main_frame.pack(fill=BOTH, expand=True)
-        
-        # Title
-        title_label = ttk.Label(main_frame, text="Email Alerts & Notifications", 
-                               font=("Helvetica", 16, "bold"))
-        title_label.pack(pady=(0, 20))
-        
-        # Status frame
-        status_frame = ttk.LabelFrame(main_frame, text="Alert System Status", padding=15)
-        status_frame.pack(fill=X, pady=(0, 20))
-        
-        # Get current status
-        try:
-            status = self.alert_system.get_alert_status()
-            
-            # Email configuration status
-            config_status = "✅ Configured" if status['email_configured'] else "❌ Not Configured"
-            ttk.Label(status_frame, text=f"Email Configuration: {config_status}").pack(anchor=W, pady=2)
-            
-            if status['email_configured']:
-                ttk.Label(status_frame, text=f"SMTP Server: {status['smtp_host']}:{status['smtp_port']}").pack(anchor=W, pady=2)
-                ttk.Label(status_frame, text=f"Email User: {status['email_user']}").pack(anchor=W, pady=2)
-                ttk.Label(status_frame, text=f"Alert Recipients: {', '.join(status['alert_recipients'])}").pack(anchor=W, pady=2)
-                ttk.Label(status_frame, text=f"Alert Thresholds: {', '.join(map(str, status['alert_thresholds']))} days").pack(anchor=W, pady=2)
-            
-            # Expiring policies
-            if 'total_expiring_soon' in status:
-                ttk.Label(status_frame, text=f"Policies Expiring Soon: {status['total_expiring_soon']}").pack(anchor=W, pady=2)
-                ttk.Label(status_frame, text=f"  - 60 days: {status.get('policies_expiring_60_days', 0)}").pack(anchor=W, pady=2)
-                ttk.Label(status_frame, text=f"  - 30 days: {status.get('policies_expiring_30_days', 0)}").pack(anchor=W, pady=2)
-            
-        except Exception as e:
-            ttk.Label(status_frame, text=f"Error getting status: {str(e)}", 
-                     foreground="red").pack(anchor=W, pady=2)
-        
-        # Control buttons
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=X, pady=(20, 0))
-        
-        # Test email button
-        test_button = ttk.Button(button_frame, text="📧 Send Test Email", 
-                               style="info.TButton",
-                               command=self._send_test_email)
-        test_button.pack(side=LEFT, padx=(0, 10))
-        
-        # Manual check button
-        check_button = ttk.Button(button_frame, text="🔍 Check Expiring Policies", 
-                                style="warning.TButton",
-                                command=self._manual_check_alerts)
-        check_button.pack(side=LEFT, padx=(0, 10))
-        
-        # Configuration info
-        config_frame = ttk.LabelFrame(main_frame, text="Configuration", padding=15)
-        config_frame.pack(fill=X, pady=(20, 0))
-        
-        config_text = """
-To configure email alerts, create a .env file in the application directory with:
-
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_USER=your_email@gmail.com
-EMAIL_PASSWORD=your_app_password
-ALERT_EMAIL_1=recipient1@example.com
-ALERT_EMAIL_2=recipient2@example.com
-
-Note: For Gmail, you'll need to use an App Password, not your regular password.
-        """
-        
-        config_label = ttk.Label(config_frame, text=config_text, 
-                               font=("Courier", 9), justify=tk.LEFT)
-        config_label.pack(anchor=W)
-    
-    def _create_menu(self):
-        """Create the application menu bar"""
-        menubar = tk.Menu(self.root)
-        self.root.config(menu=menubar)
-        
-        # File menu
-        file_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="Refresh Data", command=self._refresh_data)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self._on_closing)
-        
-        # Tools menu
-        tools_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Tools", menu=tools_menu)
-        tools_menu.add_command(label="Upload PDF", command=self._show_upload_dialog)
-        tools_menu.add_command(label="Add New Item", command=self._on_add_item)
-        tools_menu.add_separator()
-        
-        # Add alert-related menu items only if alert system is available
-        if self.alert_system:
-            tools_menu.add_command(label="Check Alerts", command=self._manual_check_alerts)
-            tools_menu.add_command(label="Send Test Email", command=self._send_test_email)
-        else:
-            tools_menu.add_command(label="Check Alerts", command=self._show_alerts_unavailable, state=tk.DISABLED)
-            tools_menu.add_command(label="Send Test Email", command=self._show_alerts_unavailable, state=tk.DISABLED)
-        
-        # Help menu
-        help_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="Help", menu=help_menu)
-        help_menu.add_command(label="About", command=self._show_about)
-    
-    def _on_edit_assignment(self, building_info, current_agent):
-        """Handle edit assignment request"""
-        dialog = EditAssignmentDialog(self.root, building_info, current_agent, self.db)
-        self.root.wait_window(dialog)
-        
-        if dialog.result and dialog.result.get('success'):
-            # Refresh the table
-            self.policy_table.refresh_data()
-    
-    def _on_add_item(self):
-        """Handle add item request"""
-        dialog = AddItemDialog(self.root, self.db)
-        self.root.wait_window(dialog)
-        
-        if dialog.result:
-            # Refresh the table
-            self.policy_table.refresh_data()
-    
-    def _show_upload_dialog(self):
-        """Show the PDF upload dialog"""
-        dialog = PDFUploadDialog(self.root, self.db, self.pdf_parser, self.rag_system)
-        self.root.wait_window(dialog)
-    
-    def _refresh_data(self):
-        """Refresh all data displays"""
-        try:
-            self.policy_table.refresh_data()
-            messagebox.showinfo("Success", "Data refreshed successfully")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to refresh data: {str(e)}")
-    
-    def _manual_check_alerts(self):
-        """Manually trigger alert check"""
-        if not self.alert_system:
-            messagebox.showwarning("Alerts Unavailable", "The alert system is not currently available.")
-            return
-        
-        try:
-            self.alert_system.manual_check_expiring_policies()
-            messagebox.showinfo("Success", "Alert check completed")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to check alerts: {str(e)}")
-    
-    def _send_test_email(self):
-        """Send a test email"""
-        if not self.alert_system:
-            messagebox.showwarning("Alerts Unavailable", "The alert system is not currently available.")
-            return
-        
-        try:
-            if self.alert_system.send_test_email():
-                messagebox.showinfo("Success", "Test email sent successfully")
-            else:
-                messagebox.showwarning("Warning", "Test email not sent - check configuration")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to send test email: {str(e)}")
-    
-    def _show_about(self):
-        """Show about dialog"""
-        about_text = """
-Insurance Master v1.0
-
-A comprehensive insurance policy management system with:
-• Agent-to-building policy management
-• PDF policy parsing and extraction
-• AI-powered Q&A system
-• Automated email alerts
-
-Built with Python, Tkinter, and OpenAI
-        """
-        
-        messagebox.showinfo("About Insurance Master", about_text.strip())
-    
-    def _start_alerts(self):
-        """Start the email alert system"""
-        try:
-            # The alert system starts automatically in its constructor
-            print("Email alert system started")
-        except Exception as e:
-            print(f"Warning: Failed to start alert system: {e}")
-    
-    def _on_closing(self):
-        """Handle application closing"""
-        if messagebox.askokcancel("Quit", "Are you sure you want to quit?"):
-            print("Shutting down Insurance Master...")
-            self.root.destroy()
-    
-    def run(self):
-        """Run the application"""
-        try:
-            print("Starting Insurance Master...")
-            self.root.mainloop()
-        except KeyboardInterrupt:
-            print("\nApplication interrupted by user")
-        except Exception as e:
-            print(f"Application error: {e}")
-            messagebox.showerror("Fatal Error", f"Application encountered a fatal error:\n{str(e)}")
-        finally:
-            print("Insurance Master shutdown complete")
-
-def main():
-    """Main entry point"""
+@app.post("/filters", response_model=SearchParams)
+async def set_filters(update: FilterUpdate):
+    """Update stored filters using a JSON payload."""
     try:
-        # Check if .env file exists
-        env_file = Path(".env")
-        if not env_file.exists():
-            print("Warning: .env file not found. Some features may not work properly.")
-            print("Please copy env.example to .env and configure your settings.")
+        updated = update_filters(update.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return updated
+
+
+@app.post("/filters/reset", response_model=SearchParams)
+async def reset_filters_route():
+    """Reset filters to their default values."""
+    return reset_filters()
+
+
+@app.get("/filters/ui", response_class=HTMLResponse)
+async def filters_ui(request: Request):
+    """Render HTML filter editor."""
+    saved_state = request.query_params.get("saved")
+    message = None
+    if saved_state == "1":
+        message = "Filters updated successfully."
+    elif saved_state == "reset":
+        message = "Filters reset to defaults."
+    content = _render_filter_form(load_filters(), message=message)
+    return HTMLResponse(content=content)
+
+
+@app.post("/filters/ui")
+async def filters_ui_submit(request: Request):
+    """Handle HTML form submissions for filter updates."""
+    form = await request.form()
+    payload = {}
+    for field in FilterUpdate.model_fields.keys():
+        if field not in form:
+            continue
+        value = form[field]
+        payload[field] = None if value == "" else value
+    try:
+        update_model = FilterUpdate(**payload)
+        update_filters(update_model.model_dump(exclude_unset=True))
+    except (ValidationError, ValueError) as exc:
+        content = _render_filter_form(load_filters(), error=str(exc))
+        return HTMLResponse(content=content, status_code=400)
+    return RedirectResponse(url="/filters/ui?saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/filters/ui/reset")
+async def filters_ui_reset():
+    """Reset filters via HTML form."""
+    reset_filters()
+    return RedirectResponse(url="/filters/ui?saved=reset", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post("/analyze", response_model=list[FinalReport])
+async def analyze_properties(
+    params: Optional[SearchParams] = Body(default=None),
+    use_stored: bool = False,
+    persist_filters: bool = False,
+):
+    """
+    Analyze commercial properties from LoopNet.
+    
+    **Query Parameters:**
+    - `use_stored`: Use the saved filters even if a request body is supplied (defaults to `false`)
+    - `persist_filters`: Persist the effective filters back to storage when providing a body
+
+    **Process:**
+    1. Query LoopNet API with search parameters
+    2. Run multi-agent analysis on each listing
+    3. Return scored reports with investment memos
+    
+    **Example Request:**
+    ```json
+    {
+      "locationId": "41096",
+      "locationType": "city",
+      "page": 1,
+      "size": 5,
+      "priceMin": 500000,
+      "priceMax": 3000000
+    }
+    ```
+    
+    **Returns:**
+    Array of FinalReport objects with:
+    - Individual agent scores (1-100)
+    - Overall weighted score (1-100)
+    - Investment memo (markdown)
+    """
+    # Determine search parameters (stored or request body)
+    if params is None or use_stored:
+        search_params = load_filters()
+    else:
+        search_params = params
+        if persist_filters:
+            save_filters(search_params)
+
+    # Validate API keys
+    if not settings.rapidapi_key or settings.rapidapi_key == "__SET_ME__":
+        raise HTTPException(
+            status_code=500,
+            detail="RAPIDAPI_KEY not configured. Set it in .env file."
+        )
+    
+    if not settings.openai_api_key or settings.openai_api_key == "__SET_ME__":
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY not configured. Set it in .env file."
+        )
+    
+    # Fetch listings from LoopNet
+    client = LoopNetClient()
+    try:
+        # Check if cityName is provided in filters.json
+        city_name = load_city_name()
+        if city_name:
+            print(f"🔍 Resolving city name: {city_name}")
         
-        # Create and run application
-        app = InsuranceMasterApp()
-        app.run()
+        listings = await client.search_properties(search_params, city_name=city_name)
         
+        if city_name:
+            print(f"✅ Found {len(listings)} listings")
+    except LoopNetAPIError as e:
+        message = str(e)
+        if "No data found" in message:
+            print("⚠️  LoopNet returned no data for the current filters.")
+            return []
+        raise HTTPException(status_code=502, detail=f"LoopNet API error: {message}")
     except Exception as e:
-        print(f"Failed to start application: {e}")
-        messagebox.showerror("Startup Error", f"Failed to start Insurance Master:\n{str(e)}")
-        sys.exit(1)
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+    
+    if not listings:
+        return []
+    
+    # Analyze each listing with multi-agent crew
+    crew = PropertyAnalysisCrew()
+    reports = []
+    
+    for listing in listings:
+        try:
+            report = await crew.analyze_listing(listing)
+            reports.append(report)
+        except Exception as e:
+            print(f"Error analyzing listing {listing.listing_id}: {e}")
+            continue
+    
+    # Persist each report to disk for later review
+    try:
+        from pathlib import Path
+        out_dir = Path.cwd() / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for report in reports:
+            file_path = out_dir / f"{report.listing_id}.json"
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(report.model_dump_json(indent=2))
+        print(f"✅ Saved {len(reports)} reports to: {out_dir}")
+    except Exception as e:
+        print(f"❌ Failed to save reports: {e}")
+    
+    return reports
+
+
+@app.exception_handler(LoopNetAPIError)
+async def loopnet_exception_handler(request, exc):
+    """Handle LoopNet API errors gracefully."""
+    return JSONResponse(
+        status_code=502,
+        content={"error": "LoopNet API error", "detail": str(exc)}
+    )
+
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

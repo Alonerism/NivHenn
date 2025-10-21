@@ -1,0 +1,18 @@
+{
+  "cityName": null,
+  "locationId": null,
+  "locationType": "city",
+  "page": 1,
+  "size": 5,
+  "priceMin": null,
+  "priceMax": 3000000,
+  "buildingSizeMin": null,
+  "buildingSizeMax": null,
+  "propertyType": "multifamily",
+  "capRateMin": 8,
+  "capRateMax": null,
+  "yearBuiltMin": null,
+  "yearBuiltMax": null,
+  "auctions": false,
+  "excludePendingSales": null
+}
