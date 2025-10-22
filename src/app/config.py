@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     
     # Output configuration
     output_dir: str = "./out"
+    frontend_origins: list[str] = []
     
     def get_weights(self) -> dict[str, float]:
         """Return agent weights as a dictionary."""

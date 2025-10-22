@@ -3,13 +3,24 @@ import html
 import json
 from typing import Optional
 
-from fastapi import Body, FastAPI, HTTPException, Request, status
+from fastapi import Body, FastAPI, HTTPException, Query, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import ValidationError
 
 from .app.config import settings
 from .app.filters import load_filters, update_filters, reset_filters, save_filters, load_city_name
-from .app.models import SearchParams, FinalReport, FilterUpdate
+from .app.models import (
+    SearchParams,
+    FinalReport,
+    FilterUpdate,
+    ListingPreview,
+    AnalysisPayload,
+    AnalyzeSelectionRequest,
+    AgentSummary,
+    FinalSummary,
+    Listing,
+)
 from .app.loopnet_client import LoopNetClient, LoopNetAPIError
 from .app.crew import PropertyAnalysisCrew
 
@@ -19,6 +30,75 @@ app = FastAPI(
     description="Multi-agent property analysis using LoopNet + CrewAI",
     version="0.1.0"
 )
+
+default_cors_origins = {
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+}
+
+if settings.frontend_origins:
+    default_cors_origins.update(settings.frontend_origins)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=sorted(default_cors_origins),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+CREW_KEY_MAP: dict[str, str] = {
+    "Investment": "investment",
+    "LocationRisk": "location",
+    "NewsReddit": "news",
+    "VCRiskReturn": "vc_risk",
+    "Construction": "construction",
+    "LACityData": "la_city",
+    "investment": "investment",
+    "location": "location",
+    "news": "news",
+    "vc_risk": "vc_risk",
+    "construction": "construction",
+    "la_city": "la_city",
+}
+
+AGENT_LABELS: dict[str, str] = {
+    "investment": "Investment",
+    "location": "Location Risk",
+    "news": "News / Reddit",
+    "vc_risk": "VC Risk / Return",
+    "construction": "Construction",
+}
+
+LA_DATASET_LABELS: dict[str, str] = {
+    "permits": "Building Permits",
+    "inspections": "Inspections",
+    "coo": "Certificates of Occupancy",
+    "code_open": "Open Code Violations",
+    "code_closed": "Closed Code Violations",
+}
+
+
+def _build_listing_preview(listing: "Listing") -> ListingPreview:
+    """Transform internal Listing model into the UI-friendly preview schema."""
+
+    raw = listing.raw or {}
+    photo = raw.get("photo") or raw.get("primaryPhoto")
+    if isinstance(photo, dict):
+        photo = photo.get("url") or photo.get("image")
+
+    return ListingPreview(
+        id=listing.listing_id,
+        address=listing.address,
+        price=listing.ask_price,
+        capRate=listing.cap_rate,
+        units=listing.units,
+        size=listing.building_size,
+        city=listing.city,
+        state=listing.state,
+        photoUrl=photo,
+    )
 
 
 @app.get("/")
@@ -208,6 +288,178 @@ async def filters_ui_reset():
     """Reset filters via HTML form."""
     reset_filters()
     return RedirectResponse(url="/filters/ui?saved=reset", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get("/search", response_model=list[ListingPreview])
+async def search_properties_endpoint(
+    city_name: Optional[str] = Query(default=None, alias="cityName"),
+    location_id: Optional[str] = Query(default=None, alias="locationId"),
+    location_type: str = Query(default="city", alias="locationType"),
+    page: int = Query(default=1, ge=1),
+    size: int = Query(default=5, ge=1, le=100),
+    price_min: Optional[float] = Query(default=None, alias="priceMin"),
+    price_max: Optional[float] = Query(default=None, alias="priceMax"),
+    building_size_min: Optional[float] = Query(default=None, alias="buildingSizeMin"),
+    building_size_max: Optional[float] = Query(default=None, alias="buildingSizeMax"),
+    property_type: Optional[str] = Query(default=None, alias="propertyType"),
+    cap_rate_min: Optional[float] = Query(default=None, alias="capRateMin"),
+    cap_rate_max: Optional[float] = Query(default=None, alias="capRateMax"),
+    year_built_min: Optional[int] = Query(default=None, alias="yearBuiltMin"),
+    year_built_max: Optional[int] = Query(default=None, alias="yearBuiltMax"),
+    auctions: Optional[bool] = Query(default=None, alias="auctions"),
+    exclude_pending_sales: Optional[bool] = Query(default=None, alias="excludePendingSales"),
+):
+    """Expose LoopNet search results for the frontend without triggering analysis."""
+
+    if not settings.rapidapi_key or settings.rapidapi_key == "__SET_ME__":
+        raise HTTPException(
+            status_code=500,
+            detail="RAPIDAPI_KEY not configured. Set it in .env file.",
+        )
+
+    search_params = SearchParams(
+        locationId=location_id,
+        locationType=location_type,
+        page=page,
+        size=size,
+        priceMin=price_min,
+        priceMax=price_max,
+        buildingSizeMin=building_size_min,
+        buildingSizeMax=building_size_max,
+        propertyType=property_type,
+        capRateMin=cap_rate_min,
+        capRateMax=cap_rate_max,
+        yearBuiltMin=year_built_min,
+        yearBuiltMax=year_built_max,
+        auctions=auctions,
+        excludePendingSales=exclude_pending_sales,
+    )
+
+    client = LoopNetClient()
+    active_city = city_name or load_city_name()
+
+    try:
+        listings = await client.search_properties(search_params, city_name=active_city)
+    except LoopNetAPIError as exc:
+        raise HTTPException(status_code=502, detail=f"LoopNet API error: {exc}")
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {exc}")
+
+    return [_build_listing_preview(listing) for listing in listings]
+
+
+@app.post("/analyze/listings", response_model=list[AnalysisPayload])
+async def analyze_selected_listings(request: AnalyzeSelectionRequest):
+    """Analyze specific listings selected in the UI with chosen crews."""
+
+    if not request.listingIds:
+        raise HTTPException(status_code=400, detail="listingIds must not be empty")
+    if not request.crews:
+        raise HTTPException(status_code=400, detail="At least one crew must be provided")
+
+    normalized_crews: list[str] = []
+    include_la_city = False
+
+    for crew_name in request.crews:
+        mapped = CREW_KEY_MAP.get(crew_name)
+        if not mapped:
+            raise HTTPException(status_code=400, detail=f"Unknown crew '{crew_name}'")
+        if mapped == "la_city":
+            include_la_city = True
+        else:
+            normalized_crews.append(mapped)
+
+    if not settings.rapidapi_key or settings.rapidapi_key == "__SET_ME__":
+        raise HTTPException(
+            status_code=500,
+            detail="RAPIDAPI_KEY not configured. Set it in .env file.",
+        )
+    if not settings.openai_api_key or settings.openai_api_key == "__SET_ME__":
+        raise HTTPException(
+            status_code=500,
+            detail="OPENAI_API_KEY not configured. Set it in .env file.",
+        )
+
+    filters = request.filters or load_filters()
+    active_city = request.cityName or (request.filters is None and load_city_name()) or None
+
+    client = LoopNetClient()
+    try:
+        listings = await client.search_properties(filters, city_name=active_city)
+    except LoopNetAPIError as exc:
+        raise HTTPException(status_code=502, detail=f"LoopNet API error: {exc}")
+    except Exception as exc:  # pragma: no cover - defensive
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {exc}")
+
+    listing_map = {listing.listing_id: listing for listing in listings}
+    missing = [listing_id for listing_id in request.listingIds if listing_id not in listing_map]
+    if missing:
+        raise HTTPException(status_code=404, detail={"missingListingIds": missing})
+
+    crew = PropertyAnalysisCrew()
+    results: list[AnalysisPayload] = []
+
+    for listing_id in request.listingIds:
+        listing = listing_map[listing_id]
+        report = await crew.analyze_listing(listing, enabled_agents=normalized_crews)
+
+        raw_json = report.model_dump()
+        agents_payload: list[AgentSummary] = []
+
+        agent_outputs = {
+            "investment": report.investment_output,
+            "location": report.location_output,
+            "news": report.news_output,
+            "vc_risk": report.vc_risk_output,
+            "construction": report.construction_output,
+        }
+
+        for agent_key in normalized_crews:
+            output = agent_outputs.get(agent_key)
+            if not output:
+                continue
+            agents_payload.append(
+                AgentSummary(
+                    name=AGENT_LABELS.get(agent_key, agent_key.title()),
+                    score=output.score_1_to_100,
+                    summary=output.rationale,
+                )
+            )
+
+        if include_la_city:
+            try:
+                la_records = crew.fetch_la_city_records(listing)
+            except Exception as exc:  # pragma: no cover - network issues
+                la_summary = f"LA City data unavailable: {exc}"
+                la_score = 0
+            else:
+                counts = (la_records.get("meta") or {}).get("counts") or {}
+                la_score = sum(counts.values())
+                parts = [
+                    f"{LA_DATASET_LABELS.get(dataset, dataset)}: {counts.get(dataset, 0)}"
+                    for dataset in LA_DATASET_LABELS
+                ]
+                la_summary = ", ".join(parts) if parts else "No LA dataset counts available."
+                raw_json["la_city_records"] = la_records
+
+            agents_payload.append(
+                AgentSummary(name="LA City Data", score=la_score, summary=la_summary)
+            )
+
+        final_summary_text = (report.summary or "Summary unavailable").strip()
+        results.append(
+            AnalysisPayload(
+                listingId=listing_id,
+                agents=agents_payload,
+                final=FinalSummary(
+                    summary=final_summary_text,
+                    overallScore=report.scores.overall,
+                ),
+                rawJson=raw_json,
+            )
+        )
+
+    return results
 
 
 @app.post("/analyze", response_model=list[FinalReport])

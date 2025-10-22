@@ -5,9 +5,51 @@ Allows user to select listings and agents before running expensive AI analysis.
 """
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
+
+
+def ensure_project_python() -> None:
+    """Re-exec into the project virtual environment if available."""
+
+    flag = "INTERACTIVE_ANALYZER_REEXEC"
+
+    # If we're already running inside the managed interpreter, clear the flag and continue.
+    if os.environ.get(flag) == "1":
+        os.environ.pop(flag, None)
+        return
+
+    project_root = Path(__file__).resolve().parent
+    candidates: list[Path] = []
+
+    # POSIX virtualenv locations
+    candidates.append(project_root / ".venv" / "bin" / "python")
+    candidates.append(project_root / "venv" / "bin" / "python")
+
+    # Windows virtualenv locations
+    candidates.append(project_root / ".venv" / "Scripts" / "python.exe")
+    candidates.append(project_root / "venv" / "Scripts" / "python.exe")
+
+    target = next((candidate for candidate in candidates if candidate.exists()), None)
+    if not target:
+        return
+
+    try:
+        current = Path(sys.executable).resolve()
+    except FileNotFoundError:
+        current = Path(sys.executable)
+
+    if current == target.resolve():
+        return
+
+    env = os.environ.copy()
+    env[flag] = "1"
+    os.execve(str(target), [str(target), *sys.argv], env)
+
+
+ensure_project_python()
 
 import httpx
 from rich.console import Console
@@ -31,10 +73,72 @@ AGENT_LABELS = {
     "news": ("📰", "News/Reddit Agent"),
     "vc_risk": ("📊", "VC Risk/Return Agent"),
     "construction": ("🏗️", "Construction Agent"),
+    "la_city": ("🏛️", "LA City Data Agent"),
 }
 
 
-from src.app.models import FinalReport
+LA_DATASET_LABELS = {
+    "permits": "Building Permits",
+    "inspections": "Inspections",
+    "coo": "Certificates of Occupancy",
+    "code_open": "Open Code Violations",
+    "code_closed": "Closed Code Violations",
+}
+
+
+def display_la_city_summary(records: dict[str, Any]) -> None:
+    """Render an overview of LA City Socrata records in the console."""
+
+    results = records.get("results") or {}
+    counts = (records.get("meta") or {}).get("counts") or {}
+    errors = records.get("errors") or {}
+
+    if not results and not counts and not errors:
+        console.print("[dim]No LA city datasets returned for this listing.[/dim]")
+        return
+
+    table = Table(
+        show_header=True,
+        header_style="bold magenta",
+        title="🏛️ LA City Records",
+        title_style="bold cyan",
+    )
+    table.add_column("Dataset", style="cyan", no_wrap=True)
+    table.add_column("Records", justify="right", style="yellow")
+    table.add_column("Sample Fields", style="green")
+
+    for key, label in LA_DATASET_LABELS.items():
+        rows = results.get(key) or []
+        count = counts.get(key, len(rows))
+
+        if rows:
+            sample_item = rows[0]
+            preview_parts = []
+            for field, value in list(sample_item.items())[:3]:
+                preview_parts.append(f"{field}={value}")
+            preview = ", ".join(preview_parts)
+        elif key in errors:
+            preview = f"Error: {errors[key]}"
+        else:
+            preview = "(no matches)"
+
+        table.add_row(label, str(count), preview)
+
+    console.print("\n[bold cyan]📂 LA City records snapshot[/bold cyan]")
+    console.print(table)
+
+    if errors:
+        error_lines = "\n".join(f"• {LA_DATASET_LABELS.get(k, k)}: {v}" for k, v in errors.items())
+        console.print(
+            Panel(
+                f"[yellow]Partial data returned.[/yellow]\n{error_lines}",
+                title="Socrata warnings",
+                border_style="yellow",
+            )
+        )
+
+
+from src.app.models import FinalReport, Listing
 from src.app.crew import PropertyAnalysisCrew
 
 
@@ -209,6 +313,7 @@ def select_agents_for_listing(listing, listing_num):
     console.print("  3. News/Reddit Agent (Market sentiment)")
     console.print("  4. VC Risk/Return Agent (Risk assessment)")
     console.print("  5. Construction Agent (Physical condition)")
+    console.print("  6. LA City Data Agent (Permits & violations)")
     console.print("\n[dim]Enter agent numbers separated by commas (e.g., 1,2,5) or 'all'[/dim]")
     
     agent_names = {
@@ -216,7 +321,8 @@ def select_agents_for_listing(listing, listing_num):
         2: "location",
         3: "news",
         4: "vc_risk",
-        5: "construction"
+        5: "construction",
+        6: "la_city",
     }
     
     while True:
@@ -227,10 +333,10 @@ def select_agents_for_listing(listing, listing_num):
         
         try:
             indices = [int(x.strip()) for x in selection.split(",")]
-            if all(1 <= idx <= 5 for idx in indices):
+            if all(1 <= idx <= 6 for idx in indices):
                 return [agent_names[idx] for idx in indices]
             else:
-                console.print("[red]Invalid agent numbers (1-5 only). Please try again.[/red]")
+                console.print("[red]Invalid agent numbers (1-6 only). Please try again.[/red]")
         except ValueError:
             console.print("[red]Invalid input. Please enter numbers separated by commas.[/red]")
 
@@ -261,14 +367,21 @@ async def analyze_listing_with_agents(
     listing,
     enabled_agents,
     run_dir: Path,
-) -> FinalReport:
+) -> tuple[FinalReport, Optional[dict[str, Any]]]:
     """Run analysis on a single listing with selected agents."""
     enabled_set = set(enabled_agents)
+    la_city_enabled = "la_city" in enabled_set
 
     console.print(f"\n[yellow]⏳ Analyzing {listing.address}...[/yellow]")
     console.print(f"[dim]Enabled agents: {', '.join(enabled_agents)}[/dim]")
 
     specialist_result = await crew.run_specialists(listing, enabled_set)
+    la_city_records = specialist_result.la_city_records
+
+    if la_city_enabled and la_city_records:
+        display_la_city_summary(la_city_records)
+    elif la_city_enabled:
+        console.print("[yellow]LA City Data Agent did not return any records for this listing.[/yellow]")
 
     # Display specialist summaries before aggregator
     console.print("\n[bold cyan]Specialist agent summaries:[/bold cyan]")
@@ -296,8 +409,12 @@ async def analyze_listing_with_agents(
     
     # Save JSON
     json_path = run_dir / f"{report.listing_id}.json"
+    payload = report.model_dump()
+    if la_city_records is not None:
+        payload["la_city_records"] = la_city_records
+
     with open(json_path, "w", encoding="utf-8") as f:
-        f.write(report.model_dump_json(indent=2))
+        json.dump(payload, f, indent=2)
     
     # Save human-readable markdown
     md_path = run_dir / f"{report.listing_id}.md"
@@ -353,6 +470,24 @@ async def analyze_listing_with_agents(
                 f.write(f"- {note}\n")
             f.write("\n---\n\n")
         
+        if la_city_records is not None:
+            counts = (la_city_records.get("meta") or {}).get("counts") or {}
+            errors = la_city_records.get("errors") or {}
+
+            f.write("## 🏛️ LA City Records\n\n")
+            f.write("| Dataset | Records |\n")
+            f.write("| --- | ---: |\n")
+            for key, label in LA_DATASET_LABELS.items():
+                count = counts.get(key, 0)
+                f.write(f"| {label} | {count} |\n")
+
+            if errors:
+                f.write("\n**Warnings:**\n")
+                for key, message in errors.items():
+                    label = LA_DATASET_LABELS.get(key, key)
+                    f.write(f"- {label}: {message}\n")
+                f.write("\n")
+
         # Consolidated Memo
         f.write("## 📝 Investment Memo\n\n")
         f.write(report.memo_markdown)
@@ -361,13 +496,21 @@ async def analyze_listing_with_agents(
     from src.app.html_report import generate_html_report
     html_path = run_dir / f"{report.listing_id}.html"
     generate_html_report(report, listing, html_path)
+
+    la_json_path: Optional[Path] = None
+    if la_city_records is not None:
+        la_json_path = run_dir / f"{report.listing_id}_la_city.json"
+        with open(la_json_path, "w", encoding="utf-8") as f:
+            json.dump(la_city_records, f, indent=2)
     
     console.print(f"[green]✓ Analysis complete for {listing.address}[/green]")
     console.print(f"[dim]  JSON: {json_path}[/dim]")
     console.print(f"[dim]  Markdown: {md_path}[/dim]")
     console.print(f"[dim]  HTML: {html_path}[/dim]")
+    if la_json_path:
+        console.print(f"[dim]  LA data: {la_json_path}[/dim]")
     
-    return report
+    return report, la_city_records
 
 
 async def main():
@@ -419,7 +562,7 @@ async def main():
         
         # Step 4: Run analysis
         console.print("\n[bold cyan]Step 4: Running AI agent analysis...[/bold cyan]")
-        reports = []
+        reports: list[tuple[FinalReport, Listing, list[str], Optional[dict[str, Any]]]] = []
         crew = PropertyAnalysisCrew()
 
         with Progress(
@@ -435,8 +578,10 @@ async def main():
                 progress.console.print(
                     f"\n[bold]Listing {idx} of {len(analysis_plan)}:[/bold] {listing.address or listing.listing_id}"
                 )
-                report = await analyze_listing_with_agents(crew, listing, agents, run_dir)
-                reports.append((report, listing, agents))
+                report, la_city_records = await analyze_listing_with_agents(
+                    crew, listing, agents, run_dir
+                )
+                reports.append((report, listing, agents, la_city_records))
                 progress.update(task_id, advance=1)
         
         # Step 5: Summary
@@ -455,7 +600,7 @@ async def main():
         summary_table.add_column("SF", justify="right", width=9)
         summary_table.add_column("Score", justify="center", style="yellow", width=8)
         
-        for report, listing, _agents in reports:
+        for report, listing, _agents, _la_data in reports:
             cap_rate = f"{listing.cap_rate:.1f}%" if listing.cap_rate else "N/A"
             units = str(listing.units) if listing.units else "N/A"
             size = f"{listing.building_size:,.0f}" if listing.building_size else "N/A"
@@ -473,12 +618,16 @@ async def main():
         
         # Print URLs separately for better readability
         console.print("\n[bold cyan]🔗 Property Links:[/bold cyan]")
-        for report, listing, _agents in reports:
+        for report, listing, _agents, _la_data in reports:
             loopnet_url = build_loopnet_url(listing)
             console.print(f"  • [cyan]{report.address}[/cyan]: [blue underline]{loopnet_url}[/blue underline]")
         
         console.print(f"\n[dim]📁 Reports saved to: {run_dir}[/dim]")
-        console.print(f"[dim]📋 Files created: {len(reports)} × (JSON + Markdown)[/dim]")
+        any_la_records = any(la_data for *_rest, la_data in reports)
+        file_summary = "JSON + Markdown + HTML"
+        if any_la_records:
+            file_summary += " + LA data"
+        console.print(f"[dim]📋 Files created: {len(reports)} × ({file_summary})[/dim]")
         
         return 0
         

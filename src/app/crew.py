@@ -1,8 +1,9 @@
 """CrewAI orchestration - coordinates all agents for property analysis."""
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 from crewai import Crew, Task
 
 from .models import Listing, AgentOutput, FinalReport, AgentScores
@@ -15,6 +16,11 @@ from ..agents.news_reddit import create_news_agent, NEWS_TASK_TEMPLATE
 from ..agents.vc_risk_return import create_vc_risk_agent, VC_RISK_TASK_TEMPLATE
 from ..agents.construction import create_construction_agent, CONSTRUCTION_TASK_TEMPLATE
 from ..agents.aggregator import create_aggregator_agent, AGGREGATOR_TASK_TEMPLATE
+from ..agents.la_property_ingestor import (
+    create_la_property_agent,
+    LAPropertyIngestorAgent,
+)
+from .la_socrata import LASocrataError
 
 
 ALL_AGENT_KEYS: tuple[str, ...] = (
@@ -36,6 +42,10 @@ class SpecialistResult:
     location_details: str
     news_context: str
     serper_missing: bool
+    la_city_records: Optional[dict[str, Any]] = None
+
+
+logger = logging.getLogger(__name__)
 
 
 class PropertyAnalysisCrew:
@@ -49,8 +59,30 @@ class PropertyAnalysisCrew:
         self.vc_risk_agent = create_vc_risk_agent()
         self.construction_agent = create_construction_agent()
         self.aggregator_agent = create_aggregator_agent()
+        self._la_property_agent: Optional[LAPropertyIngestorAgent] = None
         
         self.weights = settings.get_weights()
+
+    @property
+    def la_property_agent(self) -> LAPropertyIngestorAgent:
+        """Lazy-create the LA property ingestion agent on demand."""
+        if self._la_property_agent is None:
+            self._la_property_agent = create_la_property_agent()
+        return self._la_property_agent
+
+    def fetch_la_city_records(self, listing: Listing, *, limit: int = 50) -> dict[str, Any]:
+        """Public helper for retrieving LA records for a listing."""
+        return self.la_property_agent.fetch_for_listing(listing, limit=limit)
+
+    def run_la_city_task(
+        self,
+        *,
+        address: str,
+        zip_code: Optional[str] = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Fetch LA datasets for an arbitrary address to mirror task wiring."""
+        return self.la_property_agent.fetch(address=address, zip_code=zip_code, limit=limit)
     
     def _format_listing_details(self, listing: Listing) -> str:
         """Format listing data for agent consumption."""
@@ -183,8 +215,31 @@ class PropertyAnalysisCrew:
             else "Unknown location"
         )
 
+        include_la_city = listing.address and (
+            enabled_agents is None or "la_city" in enabled_set
+        )
+
+        la_city_records: Optional[dict[str, Any]] = None
+        if include_la_city and listing.address:
+            try:
+                la_city_records = self.fetch_la_city_records(listing)
+            except (LASocrataError, ValueError) as exc:
+                logger.warning(
+                    "LA city records unavailable for %s (%s)",
+                    listing.address,
+                    exc,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.exception("Unexpected LA property ingestion failure: %s", exc)
+
         outputs: dict[str, AgentOutput] = {}
         raw_outputs: dict[str, str] = {}
+
+        if la_city_records is not None:
+            try:
+                raw_outputs["la_city_records"] = json.dumps(la_city_records)
+            except TypeError:
+                raw_outputs["la_city_records"] = str(la_city_records)
 
         # Prepare Serper context only when news agent is enabled
         news_context = ""
@@ -307,6 +362,7 @@ class PropertyAnalysisCrew:
             location_details=location_details,
             news_context=news_context,
             serper_missing=serper_missing,
+            la_city_records=la_city_records,
         )
 
     async def analyze_listing(
@@ -400,6 +456,11 @@ Notes: {', '.join(construction_output.notes[:3])}
         
         # Extract memo from notes
         memo_markdown = "\n".join(aggregator_output.notes) if aggregator_output.notes else "No memo generated"
+        summary_text = (
+            aggregator_output.rationale
+            if aggregator_output and aggregator_output.rationale
+            else "Summary unavailable"
+        )
         
         # Build final report
         agent_scores = AgentScores(
@@ -418,6 +479,7 @@ Notes: {', '.join(construction_output.notes[:3])}
             raw=listing.raw,
             scores=agent_scores,
             memo_markdown=memo_markdown,
+            summary=summary_text,
             investment_output=investment_output,
             location_output=location_output,
             news_output=news_output,

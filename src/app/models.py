@@ -90,6 +90,7 @@ class FinalReport(BaseModel):
     raw: dict = Field(default_factory=dict, description="Raw listing data")
     scores: AgentScores
     memo_markdown: str = Field(..., description="Consolidated investment memo")
+    summary: Optional[str] = Field(default=None, description="High-level aggregated summary")
     
     # Individual agent outputs for reference
     investment_output: Optional[AgentOutput] = None
@@ -97,3 +98,50 @@ class FinalReport(BaseModel):
     news_output: Optional[AgentOutput] = None
     vc_risk_output: Optional[AgentOutput] = None
     construction_output: Optional[AgentOutput] = None
+
+
+class ListingPreview(BaseModel):
+    """Listing payload optimized for the web UI."""
+
+    id: str
+    address: Optional[str] = None
+    price: Optional[float] = None
+    capRate: Optional[float] = None
+    units: Optional[int] = None
+    size: Optional[float] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    photoUrl: Optional[str] = None
+
+
+class AgentSummary(BaseModel):
+    """Simplified agent output for the UI."""
+
+    name: str
+    score: int
+    summary: str
+
+
+class FinalSummary(BaseModel):
+    """Top-level portfolio manager summary for a listing."""
+
+    summary: str
+    overallScore: int
+
+
+class AnalysisPayload(BaseModel):
+    """UI friendly analysis response."""
+
+    listingId: str
+    agents: list[AgentSummary]
+    final: FinalSummary
+    rawJson: dict
+
+
+class AnalyzeSelectionRequest(BaseModel):
+    """Request payload for analyzing specific listings with chosen crews."""
+
+    listingIds: list[str]
+    crews: list[str]
+    filters: Optional[SearchParams] = None
+    cityName: Optional[str] = None

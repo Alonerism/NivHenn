@@ -15,6 +15,7 @@ A **simple, runnable Python project** that queries LoopNet via RapidAPI, runs a 
 - **Final Report**: Overall weighted score + markdown memo (<= 1 page)
 - **CLI & API**: Rich terminal interface + FastAPI endpoints
 - **Serper News Signals**: Pulls local headlines via Serper with graceful degradation when the API key is missing
+- **LA Open Data Bundle**: Socrata-backed permits, inspections, COO, and code enforcement ingestion for Los Angeles addresses
 
 ## 📋 Prerequisites
 
@@ -105,6 +106,7 @@ curl -X POST "http://localhost:8000/analyze?use_stored=true"
 │   │   ├── config.py           # Environment settings
 │   │   ├── models.py           # Pydantic schemas
 │   │   ├── loopnet_client.py   # LoopNet API client (HTTPX + retries)
+│   │   ├── la_socrata.py       # LA Open Data (Socrata) fetcher
 │   │   ├── crew.py             # CrewAI orchestration
 │   │   ├── scoring.py          # Score normalization & weighting
 │   │   └── tools.py            # Optional helper tools
@@ -114,7 +116,8 @@ curl -X POST "http://localhost:8000/analyze?use_stored=true"
 │   │   ├── news_reddit.py      # News/community signals
 │   │   ├── vc_risk_return.py   # Risk/return architect
 │   │   ├── construction.py     # Construction scope analyst
-│   │   └── aggregator.py       # Final memo writer
+│   │   ├── aggregator.py       # Final memo writer
+│   │   └── la_property_ingestor.py  # LA City Socrata ingestion agent
 │   ├── cli.py                  # Rich CLI interface
 │   └── main.py                 # FastAPI application
 ├── .env.example
@@ -152,6 +155,7 @@ Each agent returns:
 - **Minimal Dependencies**: No ORM, no complex abstractions
 - **Extensible**: Add optional geocoding/news APIs via `tools.py`
 - **Serper Integration**: `src/app/serper_news.py` hits `https://google.serper.dev/news` with retries and graceful fallback when `SERPER_API_KEY` is missing
+- **LA Socrata Ingestion**: `src/app/la_socrata.py` + `src/agents/la_property_ingestor.py` bundle permits, inspections, COO, and code enforcement data into one JSON blob for downstream agents
 
 ## 📊 Example Output
 
