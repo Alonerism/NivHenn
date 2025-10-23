@@ -1,0 +1,12 @@
+# Ignore Python files and backend
+../src/
+../*.py
+../requirements*.txt
+../pyproject.toml
+../render.yaml
+../.git/
+../out/
+../outputs/
+../tests/
+../config/
+../scaffolding/
