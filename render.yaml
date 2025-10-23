@@ -5,7 +5,8 @@ services:
     plan: starter
     buildCommand: |
       pip install --upgrade pip
-      pip install -r requirements.full.txt
+      pip install -e .
+      pip install -e ".[full]"
     startCommand: gunicorn -w 4 -k uvicorn.workers.UvicornWorker src.main:app
     envVars:
       - key: OPENAI_API_KEY
