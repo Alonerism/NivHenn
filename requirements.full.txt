@@ -1,4 +1,3 @@
-pip-requirements
 # Base dependencies
 fastapi>=0.110.0
 gunicorn>=21.2.0
