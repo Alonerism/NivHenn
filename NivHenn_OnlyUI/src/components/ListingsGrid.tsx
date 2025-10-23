@@ -11,7 +11,7 @@ interface ListingsGridProps {
 export function ListingsGrid({ listings, selectedIds, onToggleSelection }: ListingsGridProps) {
   if (listings.length === 0) {
     return (
-      <div className="bg-white rounded-lg shadow p-8 text-center text-gray-500">
+      <div className="bg-white dark:bg-gray-900 rounded-lg shadow p-8 text-center text-gray-500 dark:text-gray-300">
         No listings found. Try adjusting your filters.
       </div>
     );
@@ -22,12 +22,12 @@ export function ListingsGrid({ listings, selectedIds, onToggleSelection }: Listi
       {listings.map((listing) => (
         <div
           key={listing.id}
-          className={`bg-white rounded-lg shadow hover:shadow-lg transition-shadow overflow-hidden cursor-pointer ${
+          className={`bg-white dark:bg-gray-900 rounded-lg shadow hover:shadow-lg transition-shadow overflow-hidden cursor-pointer ${
             selectedIds.has(listing.id) ? 'ring-2 ring-blue-500' : ''
           }`}
           onClick={() => onToggleSelection(listing.id)}
         >
-          <div className="relative h-48 bg-gray-200">
+          <div className="relative h-48 bg-gray-200 dark:bg-gray-800">
             {listing.photoUrl ? (
               <img
                 src={listing.photoUrl}
@@ -56,25 +56,25 @@ export function ListingsGrid({ listings, selectedIds, onToggleSelection }: Listi
           </div>
 
           <div className="p-4 space-y-2">
-            <h3 className="font-semibold text-gray-900 text-sm line-clamp-2">{listing.address}</h3>
+            <h3 className="font-semibold text-gray-900 dark:text-gray-100 text-sm line-clamp-2">{listing.address}</h3>
             <div className="grid grid-cols-2 gap-2 text-sm">
               <div>
-                <span className="text-gray-600">Price:</span>
-                <p className="font-medium text-gray-900">
+                <span className="text-gray-600 dark:text-gray-300">Price:</span>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
                   {listing.price ? `$${(listing.price / 1_000_000).toFixed(2)}M` : 'N/A'}
                 </p>
               </div>
               <div>
-                <span className="text-gray-600">Cap Rate:</span>
-                <p className="font-medium text-gray-900">{listing.capRate ?? 'N/A'}%</p>
+                <span className="text-gray-600 dark:text-gray-300">Cap Rate:</span>
+                <p className="font-medium text-gray-900 dark:text-gray-100">{listing.capRate ?? 'N/A'}%</p>
               </div>
               <div>
-                <span className="text-gray-600">Units:</span>
-                <p className="font-medium text-gray-900">{listing.units ?? 'N/A'}</p>
+                <span className="text-gray-600 dark:text-gray-300">Units:</span>
+                <p className="font-medium text-gray-900 dark:text-gray-100">{listing.units ?? 'N/A'}</p>
               </div>
               <div>
-                <span className="text-gray-600">Size:</span>
-                <p className="font-medium text-gray-900">
+                <span className="text-gray-600 dark:text-gray-300">Size:</span>
+                <p className="font-medium text-gray-900 dark:text-gray-100">
                   {listing.size ? `${listing.size.toLocaleString()} sqft` : 'N/A'}
                 </p>
               </div>

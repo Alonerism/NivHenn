@@ -64,19 +64,19 @@ ${result.final.summary}
 
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-gray-900">Analysis Results</h2>
+      <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Analysis Results</h2>
 
       {results.map((result) => {
         const listing = getListingById(result.listingId);
         return (
-          <div key={result.listingId} className="bg-white rounded-lg shadow p-6 space-y-4">
+          <div key={result.listingId} className="bg-white dark:bg-gray-900 rounded-lg shadow p-6 space-y-4">
             <div className="flex items-start justify-between">
               <div>
-                <h3 className="text-xl font-semibold text-gray-900">
+                <h3 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
                   {listing?.address || `Listing ${result.listingId}`}
                 </h3>
                 {listing && (
-                  <p className="text-sm text-gray-600 mt-1">
+                  <p className="text-sm text-gray-400 mt-1">
                     {listing.price ? `$${(listing.price / 1_000_000).toFixed(2)}M` : 'N/A'} • {listing.capRate ?? 'N/A'}% Cap Rate
                   </p>
                 )}
@@ -84,7 +84,7 @@ ${result.final.summary}
               <div className="flex items-center space-x-2">
                 <button
                   onClick={() => downloadJSON(result)}
-                  className="flex items-center space-x-1 px-3 py-2 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors"
+                  className="flex items-center space-x-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-md transition-colors"
                   title="Download JSON"
                 >
                   <FileJson className="w-4 h-4" />
@@ -92,7 +92,7 @@ ${result.final.summary}
                 </button>
                 <button
                   onClick={() => downloadMarkdown(result)}
-                  className="flex items-center space-x-1 px-3 py-2 text-sm bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors"
+                  className="flex items-center space-x-1 px-3 py-2 text-sm bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-md transition-colors"
                   title="Download Markdown"
                 >
                   <FileText className="w-4 h-4" />
@@ -105,10 +105,10 @@ ${result.final.summary}
               {result.agents.map((agent) => (
                 <div
                   key={agent.name}
-                  className="border border-gray-200 rounded-md p-4 space-y-2"
+                  className="border border-gray-200 dark:border-gray-800 rounded-md p-4 space-y-2"
                 >
                   <div className="flex items-center justify-between">
-                    <h4 className="font-semibold text-gray-900">{agent.name}</h4>
+                    <h4 className="font-semibold text-gray-900 dark:text-gray-100">{agent.name}</h4>
                     <span
                       className={`px-2 py-1 text-xs font-bold rounded ${
                         agent.score >= 80
@@ -121,14 +121,14 @@ ${result.final.summary}
                       {agent.score}
                     </span>
                   </div>
-                  <p className="text-sm text-gray-600">{agent.summary}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-300">{agent.summary}</p>
                 </div>
               ))}
             </div>
 
-            <div className="border-t border-gray-200 pt-4 mt-4">
+            <div className="border-t border-gray-200 dark:border-gray-800 pt-4 mt-4">
               <div className="flex items-center justify-between mb-3">
-                <h4 className="text-lg font-semibold text-gray-900">Final Summary</h4>
+                <h4 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Final Summary</h4>
                 <span
                   className={`px-3 py-1 text-sm font-bold rounded ${
                     result.final.overallScore >= 80
@@ -141,7 +141,7 @@ ${result.final.summary}
                   Overall: {result.final.overallScore}
                 </span>
               </div>
-              <p className="text-gray-700">{result.final.summary}</p>
+              <p className="text-gray-300">{result.final.summary}</p>
             </div>
           </div>
         );
