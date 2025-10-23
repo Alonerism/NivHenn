@@ -1,0 +1,48 @@
+# python / backend
+backend/
+api-python/
+api/**/*.py
+*.py
+pyproject.toml
+poetry.lock
+requirements*.txt
+setup.cfg
+setup.sh
+.venv/
+venv/
+__pycache__/
+src/
+config/
+scaffolding/
+models/
+
+# tests and tooling
+tests/
+pytest.ini
+.pytest_cache/
+.mypy_cache/
+
+# data / artifacts
+data/
+datasets/
+logs/
+tmp/
+outputs/
+*.csv
+*.parquet
+*.zip
+*.jsonl
+
+# other package builds
+dist-*/
+build-*/
+coverage/
+out/
+
+# node clutter
+node_modules/
+*.map
+
+# misc project roots
+# default ignores
+*.md

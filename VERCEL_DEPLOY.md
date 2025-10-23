@@ -1,92 +1,113 @@
-# Deploying to Vercel (Preview Demo)
+# Deploying the Frontend + Edge Proxies to Vercel
 
-This guide walks through the quickest path to ship the combined FastAPI backend and Vite frontend to Vercel so you can share a working demo link. The setup is intentionally lightweight—great for previews, not hardened production.
+This guide describes the lean deployment path that ships only the Vite frontend and a couple of Edge proxies. The heavy Python backend stays on your own infrastructure (Render, Railway, EC2, etc.) and Vercel simply forwards browser calls to it. The end result avoids the 250 MB serverless limit entirely while keeping the public demo fast.
+
+---
 
 ## 1. Prerequisites
 
-- Vercel account with the [Vercel CLI](https://vercel.com/docs/cli) installed.
-- Git repository pushed to a remote (GitHub or similar) or a local checkout ready to deploy via CLI.
-- RapidAPI and OpenAI credentials (plus any other keys you rely on in `.env`).
+- Vercel CLI installed and authenticated (`npm install -g vercel && vercel login`).
+- A reachable FastAPI backend URL (the value you will expose via `BACKEND_BASE`).
+- Node 18+ locally for building the Vite app.
 
 ```bash
-npm install -g vercel
-vercel login
+cd /path/to/NivHenn
+vercel whoami
+vercel link --confirm   # Select the niv-henn project when prompted
+vercel env ls           # Sanity-check that env vars belong to this project
 ```
 
-## 2. Project layout recap
+---
+
+## 2. Repo layout relevant to Vercel
 
 ```
-/                       # repo root
-├── api/index.py        # Vercel serverless entrypoint importing FastAPI app
-├── vercel.json         # Build + routing config for Vercel
-├── src/                # FastAPI application code
-└── NivHenn_OnlyUI/     # Vite + React frontend
+/                         (repo root)
+├── .vercelignore         # strips Python + data blobs from deployments
+├── api/
+│   ├── search.ts         # Edge proxy → GET /search
+│   └── analyze/listings.ts # Edge proxy → POST /analyze/listings
+├── vercel.json           # Static build + Edge runtime declaration
+└── NivHenn_OnlyUI/       # Vite frontend (built into `dist/`)
 ```
 
-The `vercel.json` file wires up two build targets:
+Everything else (Python packages, datasets, tests, etc.) is ignored during the deploy.
 
-1. `@vercel/static-build` → builds the Vite app (`npm run build`) and publishes the `dist` folder.
-2. `@vercel/python` → exposes the FastAPI app through the `/api` serverless function.
+---
 
-## 3. Configure environment variables
+## 3. Environment variables
 
-Create the required environment variables on Vercel **before** deploying so both the frontend and backend can run:
+Set project-level environment variables in the Vercel dashboard (Project → Settings → Environment Variables) or via CLI:
 
-| Name | Where it’s used | Example | Notes |
-|------|-----------------|---------|-------|
-| `RAPIDAPI_KEY` | FastAPI (serverless) | `sk_...` | Required for LoopNet requests |
-| `OPENAI_API_KEY` | FastAPI (serverless) | `sk-...` | Required for agent analysis |
-| `NEWS_API_KEY`, `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` | Optional extras | | Only if you already use them locally |
-| `VITE_API_BASE` | Vite frontend | `/api` | Ensures the browser hits the co-located serverless API |
+| Name | Description | Typical value |
+|------|-------------|----------------|
+| `BACKEND_BASE` | Public HTTPS URL for the FastAPI service you host elsewhere | `https://your-backend.example.com` |
+| `VITE_API_BASE` | Frontend fetch prefix. Already defaults to `/api` via `.env.production`, but configure in Vercel so previews match. | `/api` |
 
-Using the CLI:
+CLI example:
 
 ```bash
-vercel env add RAPIDAPI_KEY
-vercel env add OPENAI_API_KEY
+vercel env add BACKEND_BASE
 vercel env add VITE_API_BASE
-# repeat for any optional keys
 ```
 
-You’ll be prompted for values and which environment (Development / Preview / Production) to bind them to. For demo purposes, setting Preview + Production is usually enough.
+> **Note:** You no longer need `LIGHTWEIGHT_API`, `RAPIDAPI_KEY`, or any other Python-specific setting in Vercel because that workload is external.
 
-> **Tip:** To match your local dev experience, you can also run `vercel env pull .env.vercel` and then `source .env.vercel` before invoking the backend locally.
+---
 
-## 4. First deployment from the repo root
+## 4. Local smoke test
 
-From `/Users/alonflorentin/Downloads/FreeLance/NivHenn` (or your clone path):
+From the frontend folder run a production build so you know the UI compiles before shipping:
 
 ```bash
-vercel --prod
+cd NivHenn_OnlyUI
+npm install
+npm run build
 ```
 
-Vercel will detect `vercel.json`, install dependencies for both projects, build the frontend, and package the FastAPI serverless function. The output will include a production URL (`https://<project>.vercel.app`).
+You should see the output in `NivHenn_OnlyUI/dist/`.
 
-For subsequent updates you can simply run:
+Optional: emulate the Vercel build locally.
 
 ```bash
-vercel --prod
+cd ..
+vercel build
 ```
 
-or use `vercel` (Preview) to test before promoting to Production.
+---
 
-## 5. Smoke test the deployment
+## 5. Deploy
 
-After the deploy finishes:
+Back at the repo root:
 
-1. Open `https://<project>.vercel.app/` – the UI should load.
-2. Trigger a property search – network requests should target `https://<project>.vercel.app/api/search?...` (thanks to `VITE_API_BASE=/api`).
-3. Check Vercel’s dashboard **Functions** tab for cold-start times or errors if anything fails.
+```bash
+vercel --prod --yes
+```
 
-## 6. Troubleshooting
+The CLI uploads the pre-filtered repo (thanks to `.vercelignore`), runs the Vite static build, and wires the two Edge proxies. A production URL will be printed at the end.
+
+---
+
+## 6. Post-deploy checks
+
+1. Visit `https://<project>.vercel.app/` → the UI should load instantly.
+2. Open DevTools → Network → trigger a property search. Requests should hit `https://<project>.vercel.app/api/search?...` and respond with proxied data from `BACKEND_BASE`.
+3. Select listings and run an analysis → network request posts to `/api/analyze/listings` and proxies through to your backend.
+
+If anything fails, `vercel logs <deployment-url>` is your friend.
+
+---
+
+## 7. Troubleshooting
 
 | Symptom | Likely fix |
 |---------|------------|
-| `502` or `500` from `/api/search` | Confirm `RAPIDAPI_KEY` and other backend env variables are present in Vercel and valid. |
-| Browser still calling `http://localhost:8000` | Ensure `VITE_API_BASE` is set to `/api` in Vercel **and** redeploy. Check that no `.env.production` file overrides it. |
-| Large serverless payload / timeout | Increase memory or duration in `vercel.json` under `functions.api/index.py` (currently 2048 MB & 60 s). |
-| Styling missing | Re-run `npm run build` locally to confirm Tailwind/postcss compile fine; if yes, redeploy. |
+| `500` with `BACKEND_BASE is not configured` | Double-check the environment variable in Vercel (Preview/Production). Redeploy after updating. |
+| `404` from `/api/search` | Ensure the backend actually exposes `/search` and that the proxy path matches. |
+| Browser fetching `http://localhost:8000` in production | The `.env.production` file forces `/api`, but if you created an override in Vercel remove it or set it to `/api`. |
+| Build still tries to package Python | Confirm `.vercelignore` is in the root that Vercel builds from and that the project isn’t configured with a different "Root Directory". |
+| Need additional endpoints | Copy the edge proxy pattern (tiny file, `runtime: "edge"`, `fetch` pointed at `BACKEND_BASE`). |
 
-Once everything looks good, share the production URL—no additional configuration required for the recipients.
+---
 
-Happy demoing! 🚀
+That’s it—deploys stay tiny, the public demo stays fast, and the heavy Python agents remain under your control.

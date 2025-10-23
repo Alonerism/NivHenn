@@ -29,7 +29,11 @@ A **simple, runnable Python project** that queries LoopNet via RapidAPI, runs a 
 ### 1. Install Dependencies
 
 ```bash
+# Lightweight API (matches Vercel deployment)
 pip install -e .
+
+# Full multi-agent stack with CrewAI
+pip install -e ".[full]"
 ```
 
 ### 2. Configure Environment

@@ -8,20 +8,14 @@
         "buildCommand": "npm run build",
         "outputDirectory": "dist"
       }
-    },
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python"
     }
   ],
   "functions": {
-    "api/index.py": {
-      "maxDuration": 60,
-      "memory": 2048
+    "api/**/*.ts": {
+      "runtime": "edge"
     }
   },
   "routes": [
-    { "src": "/api/(.*)", "dest": "/api/index.py" },
     { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
